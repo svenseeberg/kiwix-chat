@@ -14,6 +14,7 @@ const ACCENT_TOOL: Color = Color::Rgb(0xC2, 0xA5, 0x6B); // muted gold
 const ACCENT_CODE: Color = Color::Rgb(0xC2, 0xA5, 0x6B); // muted gold
 const ACCENT_INFO: Color = Color::Rgb(0xB0, 0x9A, 0x6B); // muted amber
 const ACCENT_ERR: Color = Color::Rgb(0xC0, 0x7A, 0x7A); // muted red
+const ACCENT_LINK: Color = Color::Rgb(0x8A, 0xB4, 0xC8); // muted cyan for links
 const FG_DIM: Color = Color::Rgb(0x80, 0x80, 0x80); // grey for subdued text
 
 /// Render the whole UI: chat pane, input box, and status bar.
@@ -112,6 +113,19 @@ fn code_block_style() -> Style {
     Style::default().fg(ACCENT_CODE).add_modifier(Modifier::DIM)
 }
 
+/// Style for the visible label of a link (underlined so it reads as a link).
+fn link_label_style() -> Style {
+    Style::default()
+        .fg(ACCENT_LINK)
+        .add_modifier(Modifier::UNDERLINED)
+}
+
+/// Style for the trailing raw URL. Left un-underlined so terminals that
+/// auto-detect URLs can linkify the clean text.
+fn link_url_style() -> Style {
+    Style::default().fg(ACCENT_LINK)
+}
+
 /// Render a collapsible reasoning block. When collapsed it is a single header
 /// line; when expanded (either still streaming, or the global toggle is on) the
 /// reasoning text follows, dim and italic.
@@ -175,7 +189,8 @@ fn render_message(
                 0,
             )
         } else if markdown {
-            let b = classify_block(raw, body);
+            let normalized = normalize_math(raw);
+            let b = classify_block(&normalized, body);
             (
                 b.marker,
                 b.marker_style,
@@ -287,6 +302,232 @@ fn classify_block(raw: &str, base: Style) -> MdBlock {
     }
 }
 
+/// Best-effort conversion of stray LaTeX math into plain Unicode text.
+///
+/// The system prompt already asks the model to avoid LaTeX; this is a conservative
+/// fallback for when it doesn't. It strips math delimiters and maps a handful of
+/// common commands to Unicode. Lines with neither `\` nor `$` are returned untouched,
+/// which keeps ordinary prose and citation URLs unaffected.
+fn normalize_math(s: &str) -> String {
+    if !s.contains('\\') && !s.contains('$') {
+        return s.to_string();
+    }
+    // Inline/display math delimiters carry no meaning once rendered as text.
+    let mut out = s
+        .replace("\\(", "")
+        .replace("\\)", "")
+        .replace("\\[", "")
+        .replace("\\]", "");
+    out = strip_dollar_math(&out);
+    out = replace_wrapped(&out, "\\frac", 2, |args| format!("({})/({})", args[0], args[1]));
+    out = replace_wrapped(&out, "\\sqrt", 1, |args| format!("√({})", args[0]));
+    // Longer command names must precede any of their own prefixes (e.g. \leq before \le).
+    for (cmd, sym) in COMMAND_SYMBOLS {
+        out = out.replace(cmd, sym);
+    }
+    out = replace_superscripts(&out);
+    out
+}
+
+/// LaTeX command → Unicode replacements, ordered so longer names come before prefixes.
+const COMMAND_SYMBOLS: &[(&str, &str)] = &[
+    ("\\times", "×"),
+    ("\\cdot", "·"),
+    ("\\div", "÷"),
+    ("\\pm", "±"),
+    ("\\mp", "∓"),
+    ("\\leq", "≤"),
+    ("\\le", "≤"),
+    ("\\geq", "≥"),
+    ("\\ge", "≥"),
+    ("\\neq", "≠"),
+    ("\\approx", "≈"),
+    ("\\equiv", "≡"),
+    ("\\infty", "∞"),
+    ("\\sum", "∑"),
+    ("\\prod", "∏"),
+    ("\\int", "∫"),
+    ("\\partial", "∂"),
+    ("\\nabla", "∇"),
+    ("\\alpha", "α"),
+    ("\\beta", "β"),
+    ("\\gamma", "γ"),
+    ("\\delta", "δ"),
+    ("\\epsilon", "ε"),
+    ("\\theta", "θ"),
+    ("\\lambda", "λ"),
+    ("\\mu", "μ"),
+    ("\\pi", "π"),
+    ("\\rho", "ρ"),
+    ("\\sigma", "σ"),
+    ("\\tau", "τ"),
+    ("\\phi", "φ"),
+    ("\\omega", "ω"),
+    ("\\Delta", "Δ"),
+    ("\\Sigma", "Σ"),
+    ("\\Omega", "Ω"),
+    ("\\Rightarrow", "⇒"),
+    ("\\rightarrow", "→"),
+    ("\\to", "→"),
+    ("\\leftarrow", "←"),
+    ("\\ldots", "…"),
+    ("\\dots", "…"),
+    ("\\left", ""),
+    ("\\right", ""),
+    ("\\quad", "  "),
+    ("\\,", " "),
+    ("\\;", " "),
+    ("\\!", ""),
+];
+
+/// Remove `$$…$$` display delimiters, and `$…$` inline delimiters only when the enclosed
+/// text carries a LaTeX signal (`\`, `^`, `_`, `{`). This leaves currency like `$5` intact.
+fn strip_dollar_math(s: &str) -> String {
+    let s = s.replace("$$", "");
+    let ch: Vec<char> = s.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < ch.len() {
+        if ch[i] == '$' {
+            if let Some(close) = (i + 1..ch.len()).find(|&j| ch[j] == '$') {
+                let inner: String = ch[i + 1..close].iter().collect();
+                let mathy = inner.contains('\\')
+                    || inner.contains('^')
+                    || inner.contains('_')
+                    || inner.contains('{');
+                if mathy {
+                    out.push_str(&inner);
+                    i = close + 1;
+                    continue;
+                }
+            }
+        }
+        out.push(ch[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Replace occurrences of `cmd` followed by `argc` `{…}` groups using `render`.
+/// Argument contents are normalized recursively so nested commands are handled.
+fn replace_wrapped(
+    s: &str,
+    cmd: &str,
+    argc: usize,
+    render: impl Fn(&[String]) -> String,
+) -> String {
+    if !s.contains(cmd) {
+        return s.to_string();
+    }
+    let ch: Vec<char> = s.chars().collect();
+    let target: Vec<char> = cmd.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < ch.len() {
+        if ch[i..].starts_with(target.as_slice()) {
+            let mut j = i + target.len();
+            let mut args: Vec<String> = Vec::with_capacity(argc);
+            while args.len() < argc {
+                match take_brace(&ch, j) {
+                    Some((inner, next)) => {
+                        args.push(normalize_math(&inner));
+                        j = next;
+                    }
+                    None => break,
+                }
+            }
+            if args.len() == argc {
+                out.push_str(&render(&args));
+                i = j;
+                continue;
+            }
+        }
+        out.push(ch[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Read a `{…}` group starting at `start`, returning its contents and the index past `}`.
+fn take_brace(ch: &[char], start: usize) -> Option<(String, usize)> {
+    if start >= ch.len() || ch[start] != '{' {
+        return None;
+    }
+    let mut depth = 1;
+    let mut inner = String::new();
+    let mut j = start + 1;
+    while j < ch.len() {
+        match ch[j] {
+            '{' => {
+                depth += 1;
+                inner.push('{');
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((inner, j + 1));
+                }
+                inner.push('}');
+            }
+            c => inner.push(c),
+        }
+        j += 1;
+    }
+    None
+}
+
+/// Convert `^2`, `^n`, and `^{…}` (when every char maps) into Unicode superscripts.
+fn replace_superscripts(s: &str) -> String {
+    if !s.contains('^') {
+        return s.to_string();
+    }
+    let ch: Vec<char> = s.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < ch.len() {
+        if ch[i] == '^' && i + 1 < ch.len() {
+            if ch[i + 1] == '{' {
+                if let Some((inner, next)) = take_brace(&ch, i + 1) {
+                    let mapped: Option<String> = inner.chars().map(superscript).collect();
+                    if let Some(m) = mapped.filter(|m| !m.is_empty()) {
+                        out.push_str(&m);
+                        i = next;
+                        continue;
+                    }
+                }
+            } else if let Some(m) = superscript(ch[i + 1]) {
+                out.push(m);
+                i += 2;
+                continue;
+            }
+        }
+        out.push(ch[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Unicode superscript for a small set of characters, if one exists.
+fn superscript(c: char) -> Option<char> {
+    Some(match c {
+        '0' => '⁰',
+        '1' => '¹',
+        '2' => '²',
+        '3' => '³',
+        '4' => '⁴',
+        '5' => '⁵',
+        '6' => '⁶',
+        '7' => '⁷',
+        '8' => '⁸',
+        '9' => '⁹',
+        '+' => '⁺',
+        '-' => '⁻',
+        'n' => 'ⁿ',
+        'i' => 'ⁱ',
+        _ => return None,
+    })
+}
+
 /// Parse inline `**bold**`, `*italic*`, and `` `code` `` into styled segments.
 /// Non-recursive (no nested emphasis); unmatched delimiters are treated as text.
 fn parse_inline(text: &str, base: Style) -> Vec<Seg> {
@@ -297,6 +538,23 @@ fn parse_inline(text: &str, base: Style) -> Vec<Seg> {
     let mut i = 0;
     while i < n {
         let c = ch[i];
+        // Markdown link: [label](url). Rendered as "label (url)" so the raw URL
+        // stays visible and terminals that auto-detect URLs can linkify it.
+        if c == '[' {
+            if let Some((label, url, next)) = parse_link(&ch, i) {
+                if !cur.is_empty() {
+                    segs.push((std::mem::take(&mut cur), base));
+                }
+                if !label.is_empty() {
+                    segs.push((label, link_label_style()));
+                }
+                segs.push((" (".to_string(), base));
+                segs.push((url, link_url_style()));
+                segs.push((")".to_string(), base));
+                i = next;
+                continue;
+            }
+        }
         // Inline code.
         if c == '`' {
             if let Some(close) = (i + 1..n).find(|&j| ch[j] == '`') {
@@ -349,6 +607,28 @@ fn parse_inline(text: &str, base: Style) -> Vec<Seg> {
         segs.push((String::new(), base));
     }
     segs
+}
+
+/// Parse a `[label](url)` link starting at `start` (the `[`).
+/// Returns `(label, url, next_index)` where `next_index` is just past the `)`.
+/// Returns `None` (so the `[` is treated as literal text) if the syntax doesn't match
+/// or the URL is empty. Labels/URLs containing `]`, `(`, or `)` are not supported.
+fn parse_link(ch: &[char], start: usize) -> Option<(String, String, usize)> {
+    let n = ch.len();
+    // Closing ']' of the label.
+    let close_label = (start + 1..n).find(|&j| ch[j] == ']')?;
+    // Must be immediately followed by '('.
+    if close_label + 1 >= n || ch[close_label + 1] != '(' {
+        return None;
+    }
+    // Closing ')' of the URL.
+    let close_url = (close_label + 2..n).find(|&j| ch[j] == ')')?;
+    let label: String = ch[start + 1..close_label].iter().collect();
+    let url: String = ch[close_label + 2..close_url].iter().collect();
+    if url.trim().is_empty() {
+        return None;
+    }
+    Some((label, url, close_url + 1))
 }
 
 /// Index of the next `**` at or after `from`.
@@ -501,4 +781,53 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Span::raw("  PgUp/PgDn scroll · Tab thinking · /quit"),
     ]);
     f.render_widget(Paragraph::new(line), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Concatenate the text of a parsed inline segment list.
+    fn text_of(segs: &[Seg]) -> String {
+        segs.iter().map(|(t, _)| t.as_str()).collect()
+    }
+
+    #[test]
+    fn renders_link_as_label_and_visible_url() {
+        let base = Style::default();
+        let segs = parse_inline("See [Ada Lovelace](http://localhost:8080/content/w/A/Ada)", base);
+        assert_eq!(
+            text_of(&segs),
+            "See Ada Lovelace (http://localhost:8080/content/w/A/Ada)"
+        );
+        // The label carries the underlined link style.
+        assert!(segs
+            .iter()
+            .any(|(t, s)| t == "Ada Lovelace" && *s == link_label_style()));
+        // The URL is present as its own styled segment.
+        assert!(segs
+            .iter()
+            .any(|(t, s)| t.contains("localhost") && *s == link_url_style()));
+    }
+
+    #[test]
+    fn leaves_non_link_brackets_as_text() {
+        let base = Style::default();
+        let segs = parse_inline("an array a[i] and (parens)", base);
+        assert_eq!(text_of(&segs), "an array a[i] and (parens)");
+    }
+
+    #[test]
+    fn normalizes_common_latex() {
+        assert_eq!(normalize_math("Energy is \\(E = mc^2\\)."), "Energy is E = mc².");
+        assert_eq!(normalize_math("$$\\frac{a}{b}$$"), "(a)/(b)");
+        assert_eq!(normalize_math("speed \\approx 3 \\times 10^8"), "speed ≈ 3 × 10⁸");
+        assert_eq!(normalize_math("$\\sqrt{2}$"), "√(2)");
+    }
+
+    #[test]
+    fn leaves_plain_text_and_currency_untouched() {
+        assert_eq!(normalize_math("no math here at all"), "no math here at all");
+        assert_eq!(normalize_math("it costs $5 or $10 total"), "it costs $5 or $10 total");
+    }
 }

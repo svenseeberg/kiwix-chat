@@ -10,7 +10,7 @@ use ratatui::Terminal;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::Mutex;
 
-use crate::agent::{run_turn, AgentEvent, SYSTEM_PROMPT};
+use crate::agent::{run_turn, system_prompt, AgentEvent};
 use crate::kiwix::KiwixClient;
 use crate::llm::{ChatMessage, LlmClient};
 
@@ -70,7 +70,9 @@ impl App {
         lang: String,
         max_rounds: usize,
     ) -> Self {
-        let conversation = Arc::new(Mutex::new(vec![ChatMessage::system(SYSTEM_PROMPT)]));
+        let conversation = Arc::new(Mutex::new(vec![ChatMessage::system(system_prompt(
+            kiwix.base(),
+        ))]));
         let mut app = Self {
             messages: Vec::new(),
             input: String::new(),
