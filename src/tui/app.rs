@@ -94,7 +94,8 @@ impl App {
             DisplayKind::Info,
             format!(
                 "Connected to LLM '{}' at {}. Kiwix: {} ({}). Type a question and press Enter. \
-                 Tab toggles thinking. Commands: /lang <code>, /clear, /quit. Ctrl+C to exit.",
+                 Tab toggles thinking. Hold Shift and drag to select/copy text. \
+                 Commands: /lang <code>, /clear, /quit. Ctrl+C to exit.",
                 app.llm.model(),
                 app.llm.base(),
                 app.kiwix.base(),
@@ -339,24 +340,32 @@ async fn event_loop(
 }
 
 fn init_terminal() -> Result<Terminal<CrosstermBackend<std::io::Stdout>>> {
-    use crossterm::event::EnableMouseCapture;
+    use std::io::Write;
+
     use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
     let mut stdout = std::io::stdout();
     enable_raw_mode()?;
-    crossterm::execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    crossterm::execute!(stdout, EnterAlternateScreen)?;
+    // Enable only basic button/wheel reporting (mode 1000) plus SGR extended
+    // coordinates (mode 1006). We deliberately avoid crossterm's EnableMouseCapture,
+    // which also turns on drag/motion tracking (modes 1002/1003) and thereby breaks
+    // the terminal's native click-drag text selection. Wheel events are still
+    // reported as button presses under mode 1000, so scrolling keeps working, while
+    // Shift+drag reliably selects text for copying.
+    write!(stdout, "\x1b[?1000h\x1b[?1006h")?;
+    stdout.flush()?;
     let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
     Ok(terminal)
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<()> {
-    use crossterm::event::DisableMouseCapture;
+    use std::io::Write;
+
     use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
     disable_raw_mode()?;
-    crossterm::execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    // Disable the mouse reporting modes enabled in `init_terminal`.
+    write!(terminal.backend_mut(), "\x1b[?1006l\x1b[?1000l")?;
+    crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(())
 }
