@@ -6,6 +6,16 @@ use ratatui::Frame;
 
 use super::app::{App, DisplayKind, DisplayMessage};
 
+/// Muted palette — soft, low-saturation tones so no single color reads as loud.
+const FG_TEXT: Color = Color::Rgb(0xCC, 0xCC, 0xCC); // soft white body text
+const ACCENT_USER: Color = Color::Rgb(0x7A, 0xA2, 0xC0); // muted blue
+const ACCENT_AI: Color = Color::Rgb(0x8F, 0xB0, 0x8F); // sage green
+const ACCENT_TOOL: Color = Color::Rgb(0xC2, 0xA5, 0x6B); // muted gold
+const ACCENT_CODE: Color = Color::Rgb(0xC2, 0xA5, 0x6B); // muted gold
+const ACCENT_INFO: Color = Color::Rgb(0xB0, 0x9A, 0x6B); // muted amber
+const ACCENT_ERR: Color = Color::Rgb(0xC0, 0x7A, 0x7A); // muted red
+const FG_DIM: Color = Color::Rgb(0x80, 0x80, 0x80); // grey for subdued text
+
 /// Render the whole UI: chat pane, input box, and status bar.
 pub fn draw(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
@@ -68,21 +78,21 @@ fn style_for(kind: DisplayKind) -> (&'static str, Style) {
         DisplayKind::User => (
             "You",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(ACCENT_USER)
                 .add_modifier(Modifier::BOLD),
         ),
-        DisplayKind::Assistant => ("AI", Style::default().fg(Color::Green)),
+        DisplayKind::Assistant => ("AI", Style::default().fg(ACCENT_AI)),
         DisplayKind::Tool => (
             "·",
             Style::default()
-                .fg(Color::DarkGray)
+                .fg(ACCENT_TOOL)
                 .add_modifier(Modifier::ITALIC),
         ),
         DisplayKind::Error => (
             "!",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default().fg(ACCENT_ERR).add_modifier(Modifier::BOLD),
         ),
-        DisplayKind::Info => ("i", Style::default().fg(Color::Yellow)),
+        DisplayKind::Info => ("i", Style::default().fg(ACCENT_INFO)),
         // Thinking is rendered by render_thinking; never reached here.
         DisplayKind::Thinking => ("thinking", thinking_style()),
     }
@@ -90,17 +100,17 @@ fn style_for(kind: DisplayKind) -> (&'static str, Style) {
 
 fn thinking_style() -> Style {
     Style::default()
-        .fg(Color::Magenta)
+        .fg(FG_DIM)
         .add_modifier(Modifier::ITALIC | Modifier::DIM)
 }
 
 fn code_inline_style() -> Style {
-    Style::default().fg(Color::Yellow)
+    Style::default().fg(ACCENT_CODE)
 }
 
 fn code_block_style() -> Style {
     Style::default()
-        .fg(Color::Yellow)
+        .fg(ACCENT_CODE)
         .add_modifier(Modifier::DIM)
 }
 
@@ -139,6 +149,13 @@ fn render_message(
     markdown: bool,
 ) {
     let (label, style) = style_for(msg.kind);
+    // The label keeps its accent color; assistant answers render their body in
+    // soft white so the accent stays a small marker rather than tinting the text.
+    let body = if matches!(msg.kind, DisplayKind::Assistant) {
+        style.fg(FG_TEXT)
+    } else {
+        style
+    };
     let prefix = format!("{label}: ");
     let indent = " ".repeat(prefix.len().min(width.saturating_sub(1)));
     let content_width = width.saturating_sub(prefix.len()).max(1);
@@ -155,12 +172,12 @@ fn render_message(
         let (marker, marker_style, segs, hang) = if markdown && in_code {
             (
                 String::new(),
-                style,
+                body,
                 vec![(raw.to_string(), code_block_style())],
                 0,
             )
         } else if markdown {
-            let b = classify_block(raw, style);
+            let b = classify_block(raw, body);
             (
                 b.marker,
                 b.marker_style,
@@ -168,7 +185,7 @@ fn render_message(
                 b.hang,
             )
         } else {
-            (String::new(), style, vec![(raw.to_string(), style)], 0)
+            (String::new(), body, vec![(raw.to_string(), body)], 0)
         };
 
         let wrap_w = content_width.saturating_sub(hang).max(1);
@@ -223,7 +240,7 @@ fn classify_block(raw: &str, base: Style) -> MdBlock {
 
     // Blockquote.
     if let Some(rest) = trimmed.strip_prefix("> ") {
-        let s = Style::default().fg(Color::DarkGray);
+        let s = Style::default().fg(FG_DIM);
         return MdBlock {
             text: rest.to_string(),
             style: s,
@@ -447,7 +464,7 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
         " message "
     };
     let style = if app.busy {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(FG_DIM)
     } else {
         Style::default()
     };
@@ -469,15 +486,15 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let kiwix_state = if app.kiwix_reachable {
-        Span::styled("kiwix✓", Style::default().fg(Color::Green))
+        Span::styled("kiwix✓", Style::default().fg(ACCENT_AI))
     } else {
-        Span::styled("kiwix✗", Style::default().fg(Color::Red))
+        Span::styled("kiwix✗", Style::default().fg(ACCENT_ERR))
     };
     let status = if app.busy { "busy" } else { "ready" };
     let line = Line::from(vec![
         Span::styled(
             format!(" {} ", app.llm.model()),
-            Style::default().fg(Color::Black).bg(Color::Cyan),
+            Style::default().fg(Color::Black).bg(ACCENT_USER),
         ),
         Span::raw(" "),
         kiwix_state,
