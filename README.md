@@ -5,6 +5,8 @@ offline Kiwix (Wikipedia) library**. The model runs an agentic tool-calling loop
 it searches your Kiwix server, reads the relevant articles, and answers with
 citations — all without touching the internet.
 
+![Example of the LLM researching a physics question and then using the calculate tool to produce an answer.](example.png "Example")
+
 ```
 ┌──────────────┐   tool calls    ┌──────────────┐   HTTP    ┌────────────┐
 │  ratatui TUI │◄──────────────► │ agent loop   │◄─────────►│ kiwix-serve│
