@@ -100,7 +100,7 @@ The model is given four tools. The first three are backed by the public Kiwix HT
 - **`search_wikipedia(query, lang?, limit?)`** → `/search?…&format=xml`
 - **`read_article(zim_name, path)`** → `/raw/<zim>/content/<path>` (converted to text)
 - **`list_books()`** → `/catalog/v2/entries` (discover available ZIMs & languages)
-- **`calculate(expression)`** → offline arithmetic via [`evalexpr`](https://crates.io/crates/evalexpr) (math functions need a `math::` prefix, e.g. `math::sqrt(2)`)
+- **`calculate(expression)`** → offline arithmetic via [`evalexpr`](https://crates.io/crates/evalexpr) (math functions need a `math::` prefix, e.g. `math::sqrt(2)`; `^`/`**` for power; `pi` and `e` constants available)
 
 ## Project layout
 

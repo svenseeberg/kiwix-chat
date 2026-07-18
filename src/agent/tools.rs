@@ -1,4 +1,5 @@
 use anyhow::Result;
+use evalexpr::ContextWithMutableVariables;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -66,11 +67,11 @@ pub fn tool_defs(default_lang: &str) -> Vec<Tool> {
         Tool::function(
             "calculate",
             "Evaluate a mathematical expression and return the numeric result. Use this for ANY \
-             arithmetic instead of computing in your head. Supported operators: + - * / % ^ \
-             (power). Bare functions: min, max, floor, ceil, round. Math functions MUST be \
+             arithmetic instead of computing in your head. Supported operators: + - * / % ^ (or \
+             ** for power). Bare functions: min, max, floor, ceil, round. Math functions MUST be \
              prefixed with 'math::', e.g. math::sqrt(2), math::sin(x), math::cos(x), math::ln(x), \
              math::log(x, base), math::log10(x), math::exp(x), math::pow(x, y), math::abs(x). \
-             Constants like pi/e are not built in; write their numeric value. Angles are in radians.",
+             The constants 'pi' and 'e' are available. Angles are in radians.",
             json!({
                 "type": "object",
                 "properties": {
@@ -210,7 +211,17 @@ async fn calculate(arguments: &str) -> Result<ToolOutcome> {
     let args: CalcArgs = parse_args(arguments)?;
     let expr = args.expression.trim();
 
-    match evalexpr::eval(expr) {
+    // Accept `**` as an alias for the `^` power operator (`**` would otherwise be
+    // parsed as two `*` and fail with a missing-operand error).
+    let normalized = expr.replace("**", "^");
+
+    // Bind common constants so expressions like `2 * pi` work without the model
+    // having to inline their numeric values.
+    let mut context = evalexpr::HashMapContext::<evalexpr::DefaultNumericTypes>::new();
+    let _ = context.set_value("pi".into(), evalexpr::Value::from_float(std::f64::consts::PI));
+    let _ = context.set_value("e".into(), evalexpr::Value::from_float(std::f64::consts::E));
+
+    match evalexpr::eval_with_context(&normalized, &context) {
         Ok(value) => {
             let result = match value {
                 evalexpr::Value::Int(i) => i.to_string(),
