@@ -88,11 +88,12 @@ host, a non-default port, or a `--urlRootLocation` prefix all fit in one value
 
 ## Agent tools
 
-The model is given three tools, backed by the public Kiwix HTTP API:
+The model is given four tools. The first three are backed by the public Kiwix HTTP API:
 
 - **`search_wikipedia(query, lang?, limit?)`** → `/search?…&format=xml`
 - **`read_article(zim_name, path)`** → `/raw/<zim>/content/<path>` (converted to text)
 - **`list_books()`** → `/catalog/v2/entries` (discover available ZIMs & languages)
+- **`calculate(expression)`** → offline arithmetic via [`evalexpr`](https://crates.io/crates/evalexpr) (math functions need a `math::` prefix, e.g. `math::sqrt(2)`)
 
 ## Project layout
 
@@ -111,3 +112,7 @@ src/
 - Only offline, local endpoints are used; no external network calls are made.
 - Answer quality depends on the local model's tool-calling ability and the ZIM
   content available to Kiwix.
+
+## License
+
+Licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only).

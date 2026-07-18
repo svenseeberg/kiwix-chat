@@ -19,6 +19,8 @@ Guidelines:
   promising ones before answering. Use `list_books` if you are unsure what corpora or languages \
   are available.
 - Prefer reading at least one article rather than answering from the search snippets alone.
+- Use `calculate` for any arithmetic or numeric computation instead of doing it in your head. \
+  Note that math functions require a `math::` prefix (e.g. `math::sqrt(2)`, `math::sin(x)`).
 - Base your answer strictly on the retrieved content. If the library does not contain enough \
   information, say so plainly rather than inventing facts.
 - Cite the article titles you relied on at the end of your answer.

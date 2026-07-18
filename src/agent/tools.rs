@@ -63,6 +63,25 @@ pub fn tool_defs(default_lang: &str) -> Vec<Tool> {
              zim_name or language to search.",
             json!({ "type": "object", "properties": {} }),
         ),
+        Tool::function(
+            "calculate",
+            "Evaluate a mathematical expression and return the numeric result. Use this for ANY \
+             arithmetic instead of computing in your head. Supported operators: + - * / % ^ \
+             (power). Bare functions: min, max, floor, ceil, round. Math functions MUST be \
+             prefixed with 'math::', e.g. math::sqrt(2), math::sin(x), math::cos(x), math::ln(x), \
+             math::log(x, base), math::log10(x), math::exp(x), math::pow(x, y), math::abs(x). \
+             Constants like pi/e are not built in; write their numeric value. Angles are in radians.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "description": "The expression to evaluate, e.g. '2 * (3 + 4)' or 'math::sqrt(2) + 1'."
+                    }
+                },
+                "required": ["expression"]
+            }),
+        ),
     ]
 }
 
@@ -83,6 +102,7 @@ pub async fn dispatch(
         "search_wikipedia" => search(kiwix, default_lang, arguments).await,
         "read_article" => read(kiwix, arguments).await,
         "list_books" => list_books(kiwix).await,
+        "calculate" => calculate(arguments).await,
         other => Ok(ToolOutcome {
             content: format!("Error: unknown tool '{other}'."),
             summary: format!("Unknown tool '{other}'"),
@@ -179,6 +199,37 @@ async fn list_books(kiwix: &KiwixClient) -> Result<ToolOutcome> {
         content: serde_json::to_string_pretty(&json!({ "books": items }))?,
         summary,
     })
+}
+
+#[derive(Deserialize)]
+struct CalcArgs {
+    expression: String,
+}
+
+async fn calculate(arguments: &str) -> Result<ToolOutcome> {
+    let args: CalcArgs = parse_args(arguments)?;
+    let expr = args.expression.trim();
+
+    match evalexpr::eval(expr) {
+        Ok(value) => {
+            let result = match value {
+                evalexpr::Value::Int(i) => i.to_string(),
+                evalexpr::Value::Float(f) => f.to_string(),
+                evalexpr::Value::Boolean(b) => b.to_string(),
+                evalexpr::Value::String(s) => s,
+                other => format!("{other:?}"),
+            };
+            Ok(ToolOutcome {
+                content: json!({ "expression": expr, "result": result }).to_string(),
+                summary: format!("Calculated {expr} = {result}"),
+            })
+        }
+        // Return the error to the model as content so it can correct itself.
+        Err(e) => Ok(ToolOutcome {
+            content: format!("Error evaluating \"{expr}\": {e}"),
+            summary: format!("Calculation failed: {e}"),
+        }),
+    }
 }
 
 /// Parse tool-call JSON arguments, tolerating an empty string as `{}`.

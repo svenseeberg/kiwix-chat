@@ -120,6 +120,10 @@ fn describe_call(name: &str, arguments: &str) -> String {
             format!("Reading article '{p}'")
         }
         "list_books" => "Listing available books".to_string(),
+        "calculate" => {
+            let e = args.get("expression").and_then(|v| v.as_str()).unwrap_or("");
+            format!("Calculating {e}")
+        }
         other => format!("Calling {other}"),
     }
 }
