@@ -63,13 +63,19 @@ impl LlmClient {
         Ok(models.data.into_iter().map(|m| m.id).collect())
     }
 
-    /// Stream a chat completion. Assistant text fragments are delivered via `on_token`.
-    /// Returns the fully assembled assistant message (text and/or tool calls).
+    /// Stream a chat completion. Assistant answer fragments are delivered via
+    /// `on_token`; reasoning/thinking fragments (from `reasoning_content`,
+    /// `reasoning`, `thinking` delta fields or inline `<think>…</think>` tags) are
+    /// delivered via `on_reasoning`. Reasoning is display-only and is not included
+    /// in the assembled message returned to the caller.
+    ///
+    /// Returns the fully assembled assistant message (answer text and/or tool calls).
     pub async fn stream_chat(
         &self,
         messages: &[ChatMessage],
         tools: &[Tool],
         mut on_token: impl FnMut(&str),
+        mut on_reasoning: impl FnMut(&str),
     ) -> Result<ChatMessage> {
         let mut body = json!({
             "model": self.model,
@@ -95,6 +101,7 @@ impl LlmClient {
         let mut buf = String::new();
         let mut content = String::new();
         let mut acc = ToolCallAccumulator::default();
+        let mut think = ThinkSplitter::default();
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.context("reading stream chunk")?;
@@ -109,6 +116,7 @@ impl LlmClient {
                 };
                 let data = data.trim();
                 if data == "[DONE]" {
+                    think.flush(&mut on_token, &mut on_reasoning, &mut content);
                     return Ok(assemble(content, acc.finish()));
                 }
                 let delta: StreamChunk = match serde_json::from_str(data) {
@@ -116,11 +124,22 @@ impl LlmClient {
                     Err(_) => continue, // ignore keep-alives / non-JSON lines
                 };
                 if let Some(choice) = delta.choices.into_iter().next() {
-                    if let Some(text) = choice.delta.content {
-                        if !text.is_empty() {
-                            on_token(&text);
-                            content.push_str(&text);
+                    // Dedicated reasoning fields, if the backend exposes them.
+                    for field in [
+                        choice.delta.reasoning_content,
+                        choice.delta.reasoning,
+                        choice.delta.thinking,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        if !field.is_empty() {
+                            on_reasoning(&field);
                         }
+                    }
+                    // Answer text may embed inline <think>…</think> reasoning.
+                    if let Some(text) = choice.delta.content {
+                        think.feed(&text, &mut on_token, &mut on_reasoning, &mut content);
                     }
                     for tc in choice.delta.tool_calls {
                         acc.push(tc);
@@ -128,8 +147,102 @@ impl LlmClient {
                 }
             }
         }
+        think.flush(&mut on_token, &mut on_reasoning, &mut content);
         Ok(assemble(content, acc.finish()))
     }
+}
+
+/// Splits streamed `content` into answer text and inline `<think>…</think>`
+/// reasoning. State persists across chunks, and partial tags spanning a chunk
+/// boundary are held back until they can be resolved.
+#[derive(Default)]
+struct ThinkSplitter {
+    buf: String,
+    in_think: bool,
+}
+
+impl ThinkSplitter {
+    fn feed(
+        &mut self,
+        text: &str,
+        on_token: &mut impl FnMut(&str),
+        on_reasoning: &mut impl FnMut(&str),
+        content: &mut String,
+    ) {
+        const OPEN: &str = "<think>";
+        const CLOSE: &str = "</think>";
+        self.buf.push_str(text);
+        loop {
+            if !self.in_think {
+                if let Some(pos) = self.buf.find(OPEN) {
+                    if pos > 0 {
+                        let before = self.buf[..pos].to_string();
+                        content.push_str(&before);
+                        on_token(&before);
+                    }
+                    self.buf.drain(..pos + OPEN.len());
+                    self.in_think = true;
+                    continue;
+                }
+                // No open tag: emit everything except a possible partial tag tail.
+                let safe = self.buf.len() - hold_back(&self.buf, OPEN);
+                if safe > 0 {
+                    let emit = self.buf[..safe].to_string();
+                    content.push_str(&emit);
+                    on_token(&emit);
+                    self.buf.drain(..safe);
+                }
+                break;
+            } else if let Some(pos) = self.buf.find(CLOSE) {
+                if pos > 0 {
+                    on_reasoning(&self.buf[..pos].to_string());
+                }
+                self.buf.drain(..pos + CLOSE.len());
+                self.in_think = false;
+                continue;
+            } else {
+                let safe = self.buf.len() - hold_back(&self.buf, CLOSE);
+                if safe > 0 {
+                    on_reasoning(&self.buf[..safe].to_string());
+                    self.buf.drain(..safe);
+                }
+                break;
+            }
+        }
+    }
+
+    /// Emit any buffered remainder at end of stream (nothing more can arrive).
+    fn flush(
+        &mut self,
+        on_token: &mut impl FnMut(&str),
+        on_reasoning: &mut impl FnMut(&str),
+        content: &mut String,
+    ) {
+        if self.buf.is_empty() {
+            return;
+        }
+        let rest = std::mem::take(&mut self.buf);
+        if self.in_think {
+            on_reasoning(&rest);
+        } else {
+            content.push_str(&rest);
+            on_token(&rest);
+        }
+    }
+}
+
+/// Length of the longest suffix of `buf` that is a (proper) prefix of `tag`,
+/// i.e. how many trailing bytes must be held back in case a tag is still forming.
+fn hold_back(buf: &str, tag: &str) -> usize {
+    let b = buf.as_bytes();
+    let t = tag.as_bytes();
+    let max = (t.len() - 1).min(b.len());
+    for k in (1..=max).rev() {
+        if b[b.len() - k..] == t[..k] {
+            return k;
+        }
+    }
+    0
 }
 
 /// Ensure the base URL ends with `/v1` and has no trailing slash.
@@ -211,6 +324,15 @@ struct StreamChoice {
 struct Delta {
     #[serde(default)]
     content: Option<String>,
+    /// Reasoning trace (llama.cpp `--jinja`, DeepSeek-style).
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    /// Reasoning trace (some OpenAI-compatible servers).
+    #[serde(default)]
+    reasoning: Option<String>,
+    /// Reasoning trace (Ollama).
+    #[serde(default)]
+    thinking: Option<String>,
     #[serde(default)]
     tool_calls: Vec<ToolCallDelta>,
 }

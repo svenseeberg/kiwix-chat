@@ -9,6 +9,8 @@ use crate::llm::{ChatMessage, LlmClient};
 pub enum AgentEvent {
     /// A fragment of the assistant's answer text.
     Token(String),
+    /// A fragment of the assistant's reasoning/thinking trace.
+    Reasoning(String),
     /// A tool call has started (dim status line).
     ToolStarted { summary: String },
     /// A tool call has finished (dim status line).
@@ -36,9 +38,16 @@ pub async fn run_turn(
 
     for round in 0..max_rounds {
         let assistant = match llm
-            .stream_chat(messages, &tools, |t| {
-                let _ = tx.send(AgentEvent::Token(t.to_string()));
-            })
+            .stream_chat(
+                messages,
+                &tools,
+                |t| {
+                    let _ = tx.send(AgentEvent::Token(t.to_string()));
+                },
+                |r| {
+                    let _ = tx.send(AgentEvent::Reasoning(r.to_string()));
+                },
+            )
             .await
         {
             Ok(m) => m,
@@ -91,9 +100,16 @@ pub async fn run_turn(
          and cite the article titles you used.",
     ));
     match llm
-        .stream_chat(messages, &[], |t| {
-            let _ = tx.send(AgentEvent::Token(t.to_string()));
-        })
+        .stream_chat(
+            messages,
+            &[],
+            |t| {
+                let _ = tx.send(AgentEvent::Token(t.to_string()));
+            },
+            |r| {
+                let _ = tx.send(AgentEvent::Reasoning(r.to_string()));
+            },
+        )
         .await
     {
         Ok(m) => {
@@ -121,7 +137,10 @@ fn describe_call(name: &str, arguments: &str) -> String {
         }
         "list_books" => "Listing available books".to_string(),
         "calculate" => {
-            let e = args.get("expression").and_then(|v| v.as_str()).unwrap_or("");
+            let e = args
+                .get("expression")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             format!("Calculating {e}")
         }
         other => format!("Calling {other}"),
