@@ -1,0 +1,22 @@
+[package]
+name = "kiwix-chat"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+quick-xml = { version = "0.36", features = ["serialize"] }
+html2text = "0.12"
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+thiserror = "1"
+futures = "0.3"
+url = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
