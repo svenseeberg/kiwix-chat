@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+};
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -205,6 +207,20 @@ impl App {
         }
     }
 
+    /// Handle a mouse event (wheel scrolling of the transcript).
+    fn on_mouse(&mut self, mouse: MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                self.follow = false;
+                self.scroll = self.scroll.saturating_sub(3);
+            }
+            MouseEventKind::ScrollDown => {
+                self.scroll = self.scroll.saturating_add(3);
+            }
+            _ => {}
+        }
+    }
+
     fn submit(&mut self, tx: &UnboundedSender<AgentEvent>) {
         let text = self.input.trim().to_string();
         self.input.clear();
@@ -296,6 +312,7 @@ async fn event_loop(
             maybe_event = input_events.next() => {
                 match maybe_event {
                     Some(Ok(Event::Key(key))) => app.on_key(key, &tx),
+                    Some(Ok(Event::Mouse(mouse))) => app.on_mouse(mouse),
                     Some(Ok(Event::Resize(_, _))) => {}
                     Some(Err(e)) => return Err(e.into()),
                     None => app.should_quit = true,
@@ -320,18 +337,24 @@ async fn event_loop(
 }
 
 fn init_terminal() -> Result<Terminal<CrosstermBackend<std::io::Stdout>>> {
+    use crossterm::event::EnableMouseCapture;
     use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
     let mut stdout = std::io::stdout();
     enable_raw_mode()?;
-    crossterm::execute!(stdout, EnterAlternateScreen)?;
+    crossterm::execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
     Ok(terminal)
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<()> {
+    use crossterm::event::DisableMouseCapture;
     use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
     disable_raw_mode()?;
-    crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    crossterm::execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     terminal.show_cursor()?;
     Ok(())
 }
