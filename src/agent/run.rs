@@ -11,8 +11,6 @@ pub enum AgentEvent {
     Token(String),
     /// A fragment of the assistant's reasoning/thinking trace.
     Reasoning(String),
-    /// A tool call has started (dim status line).
-    ToolStarted { summary: String },
     /// A tool call has finished (dim status line).
     ToolFinished { summary: String },
     /// The turn completed successfully.
@@ -72,10 +70,6 @@ pub async fn run_turn(
         }
 
         for call in calls {
-            let _ = tx.send(AgentEvent::ToolStarted {
-                summary: describe_call(&call.function.name, &call.function.arguments),
-            });
-
             let (content, summary) =
                 match dispatch(kiwix, lang, &call.function.name, &call.function.arguments).await {
                     Ok(o) => (o.content, o.summary),
@@ -119,30 +113,5 @@ pub async fn run_turn(
         Err(e) => {
             let _ = tx.send(AgentEvent::Error(format!("LLM error: {e:#}")));
         }
-    }
-}
-
-/// Short human-readable description of a tool call for the activity line.
-fn describe_call(name: &str, arguments: &str) -> String {
-    let args: serde_json::Value =
-        serde_json::from_str(arguments).unwrap_or(serde_json::Value::Null);
-    match name {
-        "search_wikipedia" => {
-            let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            format!("Searching Wikipedia for \"{q}\"")
-        }
-        "read_article" => {
-            let p = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            format!("Reading article '{p}'")
-        }
-        "list_books" => "Listing available books".to_string(),
-        "calculate" => {
-            let e = args
-                .get("expression")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            format!("Calculating {e}")
-        }
-        other => format!("Calling {other}"),
     }
 }

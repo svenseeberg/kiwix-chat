@@ -153,7 +153,7 @@ impl App {
                     }
                 }
             }
-            AgentEvent::ToolStarted { summary } | AgentEvent::ToolFinished { summary } => {
+            AgentEvent::ToolFinished { summary } => {
                 self.finalize_reasoning();
                 self.current_assistant = None;
                 self.push(DisplayKind::Tool, summary);
