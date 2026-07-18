@@ -109,9 +109,7 @@ fn code_inline_style() -> Style {
 }
 
 fn code_block_style() -> Style {
-    Style::default()
-        .fg(ACCENT_CODE)
-        .add_modifier(Modifier::DIM)
+    Style::default().fg(ACCENT_CODE).add_modifier(Modifier::DIM)
 }
 
 /// Render a collapsible reasoning block. When collapsed it is a single header
