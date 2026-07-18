@@ -319,7 +319,9 @@ fn normalize_math(s: &str) -> String {
         .replace("\\[", "")
         .replace("\\]", "");
     out = strip_dollar_math(&out);
-    out = replace_wrapped(&out, "\\frac", 2, |args| format!("({})/({})", args[0], args[1]));
+    out = replace_wrapped(&out, "\\frac", 2, |args| {
+        format!("({})/({})", args[0], args[1])
+    });
     out = replace_wrapped(&out, "\\sqrt", 1, |args| format!("√({})", args[0]));
     // Longer command names must precede any of their own prefixes (e.g. \leq before \le).
     for (cmd, sym) in COMMAND_SYMBOLS {
@@ -795,7 +797,10 @@ mod tests {
     #[test]
     fn renders_link_as_label_and_visible_url() {
         let base = Style::default();
-        let segs = parse_inline("See [Ada Lovelace](http://localhost:8080/content/w/A/Ada)", base);
+        let segs = parse_inline(
+            "See [Ada Lovelace](http://localhost:8080/content/w/A/Ada)",
+            base,
+        );
         assert_eq!(
             text_of(&segs),
             "See Ada Lovelace (http://localhost:8080/content/w/A/Ada)"
@@ -819,15 +824,24 @@ mod tests {
 
     #[test]
     fn normalizes_common_latex() {
-        assert_eq!(normalize_math("Energy is \\(E = mc^2\\)."), "Energy is E = mc².");
+        assert_eq!(
+            normalize_math("Energy is \\(E = mc^2\\)."),
+            "Energy is E = mc²."
+        );
         assert_eq!(normalize_math("$$\\frac{a}{b}$$"), "(a)/(b)");
-        assert_eq!(normalize_math("speed \\approx 3 \\times 10^8"), "speed ≈ 3 × 10⁸");
+        assert_eq!(
+            normalize_math("speed \\approx 3 \\times 10^8"),
+            "speed ≈ 3 × 10⁸"
+        );
         assert_eq!(normalize_math("$\\sqrt{2}$"), "√(2)");
     }
 
     #[test]
     fn leaves_plain_text_and_currency_untouched() {
         assert_eq!(normalize_math("no math here at all"), "no math here at all");
-        assert_eq!(normalize_math("it costs $5 or $10 total"), "it costs $5 or $10 total");
+        assert_eq!(
+            normalize_math("it costs $5 or $10 total"),
+            "it costs $5 or $10 total"
+        );
     }
 }
