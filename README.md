@@ -29,9 +29,14 @@ citations — all without touching the internet.
 
 ### 1. Start Kiwix
 
+You first need to install Kiwix (`apt install kiwix`) and download a Wikipedia dump from [one
+of the mirror sites](https://dumps.wikimedia.org/kiwix/zim/wikipedia/). You can then add the 
+zim file to your library (`kiwix-manage kiwix/library.xml add kiwix/wikipedia_en_all_mini_2026-06.zim`)
+and start the daemon.
+
 ```sh
 # Note: llama.cpp also defaults to 8080, so run Kiwix on a different port.
-kiwix-serve -p 8090 wikipedia_en_all_maxi_2024-01.zim
+kiwix-serve -p 8090 --library kiwix/library.xml 
 ```
 
 ### 2. Start a local LLM (tool-calling capable model)
