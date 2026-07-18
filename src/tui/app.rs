@@ -17,12 +17,16 @@ use crate::llm::{ChatMessage, LlmClient};
 pub struct DisplayMessage {
     pub kind: DisplayKind,
     pub text: String,
+    /// For `Thinking` blocks: whether this block was collapsed once finished.
+    /// The global `show_thinking` toggle can override this for display.
+    pub collapsed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayKind {
     User,
     Assistant,
+    Thinking,
     Tool,
     Error,
     Info,
@@ -41,6 +45,10 @@ pub struct App {
     pub should_quit: bool,
     /// Index of the assistant message currently receiving streamed tokens.
     current_assistant: Option<usize>,
+    /// Index of the thinking block currently receiving streamed reasoning.
+    current_reasoning: Option<usize>,
+    /// When true, all thinking blocks are shown expanded (toggled with Tab).
+    pub show_thinking: bool,
 
     // Session context
     pub lang: String,
@@ -69,6 +77,8 @@ impl App {
             busy: false,
             should_quit: false,
             current_assistant: None,
+            current_reasoning: None,
+            show_thinking: false,
             lang,
             max_rounds,
             llm,
@@ -80,7 +90,7 @@ impl App {
             DisplayKind::Info,
             format!(
                 "Connected to LLM '{}' at {}. Kiwix: {} ({}). Type a question and press Enter. \
-                 Commands: /lang <code>, /clear, /quit. Ctrl+C to exit.",
+                 Tab toggles thinking. Commands: /lang <code>, /clear, /quit. Ctrl+C to exit.",
                 app.llm.model(),
                 app.llm.base(),
                 app.kiwix.base(),
@@ -98,32 +108,61 @@ impl App {
         self.messages.push(DisplayMessage {
             kind,
             text: text.into(),
+            collapsed: false,
         });
         self.follow = true;
+    }
+
+    /// Collapse the thinking block currently streaming (if any) and stop tracking it.
+    fn finalize_reasoning(&mut self) {
+        if let Some(idx) = self.current_reasoning.take() {
+            self.messages[idx].collapsed = true;
+        }
     }
 
     /// Handle an event coming from the running agent task.
     fn on_agent_event(&mut self, ev: AgentEvent) {
         match ev {
-            AgentEvent::Token(t) => match self.current_assistant {
-                Some(idx) => self.messages[idx].text.push_str(&t),
-                None => {
-                    self.messages.push(DisplayMessage {
-                        kind: DisplayKind::Assistant,
-                        text: t,
-                    });
-                    self.current_assistant = Some(self.messages.len() - 1);
+            AgentEvent::Token(t) => {
+                self.finalize_reasoning();
+                match self.current_assistant {
+                    Some(idx) => self.messages[idx].text.push_str(&t),
+                    None => {
+                        self.messages.push(DisplayMessage {
+                            kind: DisplayKind::Assistant,
+                            text: t,
+                            collapsed: false,
+                        });
+                        self.current_assistant = Some(self.messages.len() - 1);
+                    }
                 }
-            },
+            }
+            AgentEvent::Reasoning(r) => {
+                self.current_assistant = None;
+                match self.current_reasoning {
+                    Some(idx) => self.messages[idx].text.push_str(&r),
+                    None => {
+                        self.messages.push(DisplayMessage {
+                            kind: DisplayKind::Thinking,
+                            text: r,
+                            collapsed: false,
+                        });
+                        self.current_reasoning = Some(self.messages.len() - 1);
+                    }
+                }
+            }
             AgentEvent::ToolStarted { summary } | AgentEvent::ToolFinished { summary } => {
+                self.finalize_reasoning();
                 self.current_assistant = None;
                 self.push(DisplayKind::Tool, summary);
             }
             AgentEvent::Done => {
+                self.finalize_reasoning();
                 self.current_assistant = None;
                 self.busy = false;
             }
             AgentEvent::Error(e) => {
+                self.finalize_reasoning();
                 self.current_assistant = None;
                 self.push(DisplayKind::Error, e);
                 self.busy = false;
@@ -150,6 +189,11 @@ impl App {
             }
             KeyCode::PageDown => {
                 self.scroll = self.scroll.saturating_add(5);
+            }
+            KeyCode::Tab => {
+                // Expand/collapse all reasoning blocks (works even while busy).
+                self.show_thinking = !self.show_thinking;
+                self.follow = false;
             }
             _ if self.busy => {} // ignore input edits while a turn runs
             KeyCode::Enter => self.submit(tx),
@@ -196,6 +240,8 @@ impl App {
             Some("quit") | Some("q") | Some("exit") => self.should_quit = true,
             Some("clear") => {
                 self.messages.clear();
+                self.current_assistant = None;
+                self.current_reasoning = None;
                 let conversation = self.conversation.clone();
                 tokio::spawn(async move {
                     let mut guard = conversation.lock().await;
