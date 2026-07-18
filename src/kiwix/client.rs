@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use super::parse::{parse_catalog_xml, parse_search_xml};
-use super::{Book, SearchResult};
+use super::{ArticlePage, Book, SearchResult};
 
 /// HTTP client for a local `kiwix-serve` instance.
 #[derive(Clone)]
@@ -64,13 +64,16 @@ impl KiwixClient {
 
     /// Fetch a single article via the public `/raw` endpoint and convert it to plain text.
     ///
-    /// The result is truncated to `max_chars` to keep it within the model's context budget.
+    /// Returns the page of text starting at `offset` and spanning at most `max_chars`
+    /// characters. Long articles are paginated to stay within the model's context
+    /// budget; `ArticlePage::next_offset` indicates whether more text remains.
     pub async fn read_article(
         &self,
         zim_name: &str,
         path: &str,
+        offset: usize,
         max_chars: usize,
-    ) -> Result<String> {
+    ) -> Result<ArticlePage> {
         let path = path.trim_start_matches('/');
         let url = format!("{}/raw/{}/content/{}", self.base, zim_name, path);
         let resp = self
@@ -85,7 +88,19 @@ impl KiwixClient {
 
         let text = html2text::from_read(html.as_bytes(), 100);
         let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        Ok(truncate_chars(&text, max_chars))
+
+        let total_chars = text.chars().count();
+        let offset = offset.min(total_chars);
+        let page: String = text.chars().skip(offset).take(max_chars).collect();
+        let end = offset + page.chars().count();
+        let next_offset = if end < total_chars { Some(end) } else { None };
+
+        Ok(ArticlePage {
+            text: page,
+            total_chars,
+            offset,
+            next_offset,
+        })
     }
 
     /// List available books (ZIM files) from the OPDS catalog.
@@ -103,14 +118,4 @@ impl KiwixClient {
         let body = resp.text().await.context("reading catalog response")?;
         parse_catalog_xml(&body)
     }
-}
-
-/// Truncate to at most `max_chars` characters on a char boundary, adding an ellipsis marker.
-fn truncate_chars(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(max_chars).collect();
-    out.push_str(" […truncated]");
-    out
 }

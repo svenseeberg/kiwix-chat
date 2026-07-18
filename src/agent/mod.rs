@@ -4,7 +4,8 @@ pub mod tools;
 pub use run::{run_turn, AgentEvent};
 
 /// How much article text (in characters) a single `read_article` call may return.
-pub const ARTICLE_MAX_CHARS: usize = 8000;
+/// Longer articles are paginated: the model resumes from `next_offset` on the next call.
+pub const ARTICLE_MAX_CHARS: usize = 24000;
 
 /// Default number of search hits requested per `search_wikipedia` call.
 pub const DEFAULT_SEARCH_LIMIT: usize = 8;
@@ -24,6 +25,9 @@ Guidelines:
   promising ones before answering. Use `list_books` if you are unsure what corpora or languages \
   are available.
 - Prefer reading at least one article rather than answering from the search snippets alone.
+- Long articles are paginated. Each `read_article` result reports `total_chars`, the returned \
+  range, and `has_more`. If `has_more` is true and you still need information not yet shown, call \
+  `read_article` again with `offset` set to the `next_offset` value to continue reading.
 - Use `calculate` for any arithmetic or numeric computation instead of doing it in your head. \
   Note that math functions require a `math::` prefix (e.g. `math::sqrt(2)`, `math::sin(x)`).
 - Base your answer strictly on the retrieved content. If the library does not contain enough \

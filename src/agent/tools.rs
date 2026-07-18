@@ -40,8 +40,11 @@ pub fn tool_defs(default_lang: &str) -> Vec<Tool> {
         ),
         Tool::function(
             "read_article",
-            "Fetch the full plain-text content of a specific article, identified by the zim_name \
-             and path returned from search_wikipedia. Use this to read an article before citing it.",
+            "Fetch the plain-text content of a specific article, identified by the zim_name \
+             and path returned from search_wikipedia. Use this to read an article before citing \
+             it. Long articles are paginated: the result reports total_chars, the returned range, \
+             next_offset, and has_more. If has_more is true and you need more of the article, call \
+             again with `offset` set to the returned next_offset.",
             json!({
                 "type": "object",
                 "properties": {
@@ -52,6 +55,12 @@ pub fn tool_defs(default_lang: &str) -> Vec<Tool> {
                     "path": {
                         "type": "string",
                         "description": "The article path within the ZIM file (e.g. 'A/Ada_Lovelace')."
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Character offset to start reading from (default 0). Set this \
+                                        to the next_offset from a previous call to continue a long article.",
+                        "minimum": 0
                     }
                 },
                 "required": ["zim_name", "path"]
@@ -162,19 +171,33 @@ async fn search(kiwix: &KiwixClient, default_lang: &str, arguments: &str) -> Res
 struct ReadArgs {
     zim_name: String,
     path: String,
+    #[serde(default)]
+    offset: Option<usize>,
 }
 
 async fn read(kiwix: &KiwixClient, arguments: &str) -> Result<ToolOutcome> {
     let args: ReadArgs = parse_args(arguments)?;
-    let text = kiwix
-        .read_article(&args.zim_name, &args.path, ARTICLE_MAX_CHARS)
+    let offset = args.offset.unwrap_or(0);
+    let page = kiwix
+        .read_article(&args.zim_name, &args.path, offset, ARTICLE_MAX_CHARS)
         .await?;
-    let summary = format!("Read '{}' ({} chars)", args.path, text.chars().count());
+
+    let returned_chars = page.text.chars().count();
+    let end = page.offset + returned_chars;
+    let summary = format!(
+        "Read '{}' (chars {}–{} of {})",
+        args.path, page.offset, end, page.total_chars
+    );
     Ok(ToolOutcome {
         content: json!({
             "zim_name": args.zim_name,
             "path": args.path,
-            "text": text,
+            "text": page.text,
+            "total_chars": page.total_chars,
+            "offset": page.offset,
+            "returned_chars": returned_chars,
+            "next_offset": page.next_offset,
+            "has_more": page.next_offset.is_some(),
         })
         .to_string(),
         summary,
@@ -218,7 +241,10 @@ async fn calculate(arguments: &str) -> Result<ToolOutcome> {
     // Bind common constants so expressions like `2 * pi` work without the model
     // having to inline their numeric values.
     let mut context = evalexpr::HashMapContext::<evalexpr::DefaultNumericTypes>::new();
-    let _ = context.set_value("pi".into(), evalexpr::Value::from_float(std::f64::consts::PI));
+    let _ = context.set_value(
+        "pi".into(),
+        evalexpr::Value::from_float(std::f64::consts::PI),
+    );
     let _ = context.set_value("e".into(), evalexpr::Value::from_float(std::f64::consts::E));
 
     match evalexpr::eval_with_context(&normalized, &context) {
