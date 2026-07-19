@@ -83,6 +83,7 @@ fn build_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     for msg in &app.messages {
         match msg.kind {
             DisplayKind::Thinking => render_thinking(&mut lines, msg, app.show_thinking, width),
+            DisplayKind::Subagent => render_subagent(&mut lines, msg, app.show_thinking, width),
             // Only assistant answers get markdown formatting.
             DisplayKind::Assistant => render_message(&mut lines, msg, width, true),
             _ => render_message(&mut lines, msg, width, false),
@@ -114,9 +115,14 @@ fn style_for(kind: DisplayKind) -> (&'static str, Style) {
             Style::default().fg(ACCENT_ERR).add_modifier(Modifier::BOLD),
         ),
         DisplayKind::Info => ("i", Style::default().fg(ACCENT_INFO)),
-        // Thinking is rendered by render_thinking; never reached here.
+        // Thinking and Subagent are rendered by their own functions; never here.
         DisplayKind::Thinking => ("thinking", thinking_style()),
+        DisplayKind::Subagent => ("research", subagent_style()),
     }
+}
+
+fn subagent_style() -> Style {
+    Style::default().fg(ACCENT_TOOL).add_modifier(Modifier::DIM)
 }
 
 fn thinking_style() -> Style {
@@ -173,6 +179,43 @@ fn render_thinking(lines: &mut Vec<Line<'static>>, msg: &DisplayMessage, show: b
     }
 }
 
+/// Render a collapsible `research` sub-agent block. Collapsed it is a single
+/// header line showing the question; expanded (still streaming has already
+/// finished for these, so this is the global Tab toggle or an un-collapsed block)
+/// the cited answer follows, dim and markdown-formatted.
+fn render_subagent(lines: &mut Vec<Line<'static>>, msg: &DisplayMessage, show: bool, width: usize) {
+    let style = subagent_style();
+    let expanded = show || !msg.collapsed;
+    let arrow = if expanded { "▾" } else { "▸" };
+    let question = msg.title.as_deref().unwrap_or("(question)");
+    let header = if expanded {
+        format!("{arrow} research: \"{question}\"")
+    } else {
+        let n = msg.text.lines().count().max(1);
+        format!("{arrow} research: \"{question}\" ({n} lines) — Tab to expand")
+    };
+    lines.push(Line::from(Span::styled(header, style)));
+
+    if expanded {
+        let indent = "  ";
+        let content_width = width.saturating_sub(indent.len()).max(1);
+        // `first` starts false so the answer body uses the indent (the header above
+        // already stands in for the prefix line).
+        let mut first = false;
+        render_body(
+            lines,
+            &msg.text,
+            content_width,
+            true,
+            "",
+            style,
+            indent,
+            style,
+            &mut first,
+        );
+    }
+}
+
 /// Render a labelled message, optionally applying simple markdown formatting.
 fn render_message(
     lines: &mut Vec<Line<'static>>,
@@ -193,8 +236,44 @@ fn render_message(
     let content_width = width.saturating_sub(prefix.len()).max(1);
 
     let mut first = true;
+    render_body(
+        lines,
+        &msg.text,
+        content_width,
+        markdown,
+        &prefix,
+        style,
+        &indent,
+        body,
+        &mut first,
+    );
+    // Guarantee at least the label line for an empty message.
+    if first {
+        lines.push(Line::from(Span::styled(prefix, style)));
+    }
+}
+
+/// Render message body text into wrapped, styled lines. The first physical line
+/// gets `prefix` (styled with `prefix_style`); wrapped continuations get `indent`.
+/// `body` is the base style for the text. When `markdown` is true, fenced code
+/// blocks, GFM tables, and inline/block markdown are interpreted.
+///
+/// `first` tracks whether the prefix has been emitted yet, so callers can render
+/// a header line ahead of the body and still have the body indent correctly.
+#[allow(clippy::too_many_arguments)]
+fn render_body(
+    lines: &mut Vec<Line<'static>>,
+    text: &str,
+    content_width: usize,
+    markdown: bool,
+    prefix: &str,
+    prefix_style: Style,
+    indent: &str,
+    body: Style,
+    first: &mut bool,
+) {
     let mut in_code = false;
-    let raw_lines: Vec<&str> = msg.text.split('\n').collect();
+    let raw_lines: Vec<&str> = text.split('\n').collect();
     let mut li = 0;
     while li < raw_lines.len() {
         let raw = raw_lines[li];
@@ -215,7 +294,7 @@ fn render_message(
                 li += 1;
             }
             let table_lines = render_table(&raw_lines[start..li], content_width);
-            emit_lines(lines, table_lines, &prefix, style, &indent, &mut first);
+            emit_lines(lines, table_lines, prefix, prefix_style, indent, first);
             continue;
         }
 
@@ -242,11 +321,11 @@ fn render_message(
         let wrap_w = content_width.saturating_sub(hang).max(1);
         for (i, wl) in wrap_segments(&segs, wrap_w).into_iter().enumerate() {
             let mut spans: Vec<Span<'static>> = Vec::new();
-            if first {
-                spans.push(Span::styled(prefix.clone(), style));
-                first = false;
+            if *first {
+                spans.push(Span::styled(prefix.to_string(), prefix_style));
+                *first = false;
             } else {
-                spans.push(Span::raw(indent.clone()));
+                spans.push(Span::raw(indent.to_string()));
             }
             if i == 0 && !marker.is_empty() {
                 spans.push(Span::styled(marker.clone(), marker_style));
@@ -257,10 +336,6 @@ fn render_message(
             lines.push(Line::from(spans));
         }
         li += 1;
-    }
-    // Guarantee at least the label line for an empty message.
-    if first {
-        lines.push(Line::from(Span::styled(prefix, style)));
     }
 }
 

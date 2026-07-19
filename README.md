@@ -83,12 +83,25 @@ host, a non-default port, or a `--urlRootLocation` prefix all fit in one value
 
 ## Agent tools
 
-The model is given four tools. The first three are backed by the public Kiwix HTTP API:
+The model is given five tools. The first three are backed by the public Kiwix HTTP API:
 
 - **`search_wikipedia(query, lang?, limit?)`** → `/search?…&format=xml`
 - **`read_article(zim_name, path)`** → `/raw/<zim>/content/<path>` (converted to text)
 - **`list_books()`** → `/catalog/v2/entries` (discover available ZIMs & languages)
 - **`calculate(expression)`** → offline arithmetic via [`evalexpr`](https://crates.io/crates/evalexpr) (math functions need a `math::` prefix, e.g. `math::sqrt(2)`; `^`/`**` for power; `pi` and `e` constants available)
+- **`research(question, lang?)`** → delegates a focused question to an isolated sub-agent
+
+### Sub-agent research
+
+`research` lets the main agent hand a specific question to a **sub-agent** that runs
+its own tool-calling loop (search/read/list/calculate) in a private conversation and
+returns a single, cited answer. Because the sub-agent's article reads stay in its own
+context, only the distilled answer enters the main conversation — keeping the chat
+history and context window uncluttered on multi-topic questions.
+
+The sub-agent reuses `--max-rounds` and cannot spawn further sub-agents. Its activity
+shows as nested dim `↳` lines, and its answer is displayed as a **collapsible block**
+(collapsed by default; press `Tab` to expand it along with thinking blocks).
 
 ## Project layout
 

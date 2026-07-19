@@ -19,9 +19,11 @@ use crate::llm::{ChatMessage, LlmClient};
 pub struct DisplayMessage {
     pub kind: DisplayKind,
     pub text: String,
-    /// For `Thinking` blocks: whether this block was collapsed once finished.
-    /// The global `show_thinking` toggle can override this for display.
+    /// For `Thinking` and `Subagent` blocks: whether this block was collapsed
+    /// once finished. The global `show_thinking` toggle can override this for display.
     pub collapsed: bool,
+    /// For `Subagent` blocks: the research question, shown in the collapsed header.
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +34,8 @@ pub enum DisplayKind {
     Tool,
     Error,
     Info,
+    /// A `research` sub-agent's answer, shown as a collapsible block.
+    Subagent,
 }
 
 /// Everything needed to run the chat session.
@@ -123,6 +127,7 @@ impl App {
             kind,
             text: text.into(),
             collapsed: false,
+            title: None,
         });
         self.follow = true;
     }
@@ -146,6 +151,7 @@ impl App {
                             kind: DisplayKind::Assistant,
                             text: t,
                             collapsed: false,
+                            title: None,
                         });
                         self.current_assistant = Some(self.messages.len() - 1);
                     }
@@ -160,6 +166,7 @@ impl App {
                             kind: DisplayKind::Thinking,
                             text: r,
                             collapsed: false,
+                            title: None,
                         });
                         self.current_reasoning = Some(self.messages.len() - 1);
                     }
@@ -169,6 +176,18 @@ impl App {
                 self.finalize_reasoning();
                 self.current_assistant = None;
                 self.push(DisplayKind::Tool, summary);
+            }
+            AgentEvent::SubagentAnswer { question, answer } => {
+                self.finalize_reasoning();
+                self.current_assistant = None;
+                // Collapsed by default so the transcript stays clean; Tab expands it.
+                self.messages.push(DisplayMessage {
+                    kind: DisplayKind::Subagent,
+                    text: answer,
+                    collapsed: true,
+                    title: Some(question),
+                });
+                self.follow = true;
             }
             AgentEvent::Usage {
                 prompt_tokens,

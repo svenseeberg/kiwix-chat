@@ -8,8 +8,12 @@ use crate::kiwix::KiwixClient;
 use crate::llm::Tool;
 
 /// JSON-schema tool definitions advertised to the model on every request.
-pub fn tool_defs(default_lang: &str) -> Vec<Tool> {
-    vec![
+///
+/// `include_research` adds the `research` sub-agent tool. It is enabled for the
+/// top-level agent but disabled inside a sub-agent so a sub-agent cannot spawn
+/// further sub-agents (no unbounded recursion).
+pub fn tool_defs(default_lang: &str, include_research: bool) -> Vec<Tool> {
+    let mut tools = vec![
         Tool::function(
             "search_wikipedia",
             "Full-text search the local Wikipedia/Kiwix library. Returns a list of matching \
@@ -92,7 +96,38 @@ pub fn tool_defs(default_lang: &str) -> Vec<Tool> {
                 "required": ["expression"]
             }),
         ),
-    ]
+    ];
+
+    if include_research {
+        tools.push(Tool::function(
+            "research",
+            "Delegate a focused, self-contained research question to a sub-agent that searches \
+             and reads the local Kiwix library on its own and returns a concise, cited answer. \
+             Use this to gather specific facts WITHOUT loading full article text into your own \
+             context: the sub-agent's searches and article reads stay in its private context, and \
+             only its final answer (with the sources it used) is returned to you. Ask ONE clear, \
+             specific question per call. The returned answer lists the sources (title, zim_name, \
+             path); reuse those to build your own citation links.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "One clear, specific question for the sub-agent to answer from the library."
+                    },
+                    "lang": {
+                        "type": "string",
+                        "description": format!(
+                            "3-letter language code to scope the sub-agent's searches (default: {default_lang})."
+                        )
+                    }
+                },
+                "required": ["question"]
+            }),
+        ));
+    }
+
+    tools
 }
 
 /// Outcome of a tool call: the string returned to the model plus a short human summary for the UI.
@@ -225,6 +260,14 @@ async fn list_books(kiwix: &KiwixClient) -> Result<ToolOutcome> {
     })
 }
 
+/// Arguments for the `research` sub-agent tool. Parsed in the agent loop (not
+/// `dispatch`) because running the sub-agent needs the `LlmClient`.
+#[derive(Deserialize)]
+pub(super) struct ResearchArgs {
+    pub question: String,
+    pub lang: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct CalcArgs {
     expression: String,
@@ -270,7 +313,7 @@ async fn calculate(arguments: &str) -> Result<ToolOutcome> {
 }
 
 /// Parse tool-call JSON arguments, tolerating an empty string as `{}`.
-fn parse_args<T: for<'de> Deserialize<'de>>(arguments: &str) -> Result<T> {
+pub(super) fn parse_args<T: for<'de> Deserialize<'de>>(arguments: &str) -> Result<T> {
     let trimmed = arguments.trim();
     let src = if trimmed.is_empty() { "{}" } else { trimmed };
     Ok(serde_json::from_str(src)?)
