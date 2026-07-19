@@ -74,6 +74,7 @@ impl LlmClient {
         &self,
         messages: &[ChatMessage],
         tools: &[Tool],
+        cancel: &mut tokio::sync::watch::Receiver<bool>,
         mut on_token: impl FnMut(&str),
         mut on_reasoning: impl FnMut(&str),
         mut on_usage: impl FnMut(u32, u32),
@@ -105,7 +106,19 @@ impl LlmClient {
         let mut acc = ToolCallAccumulator::default();
         let mut think = ThinkSplitter::default();
 
-        while let Some(chunk) = stream.next().await {
+        loop {
+            // Interruptible receive: either the next chunk arrives, or the caller
+            // signals cancellation (which resolves even if the stream is stalled).
+            let chunk = tokio::select! {
+                _ = cancel.changed() => {
+                    think.flush(&mut on_token, &mut on_reasoning, &mut content);
+                    return Ok(assemble(content, acc.finish()));
+                }
+                maybe = stream.next() => match maybe {
+                    Some(c) => c,
+                    None => break,
+                },
+            };
             let chunk = chunk.context("reading stream chunk")?;
             buf.push_str(&String::from_utf8_lossy(&chunk));
 

@@ -1,4 +1,5 @@
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::watch;
 
 use super::tools::{dispatch, tool_defs};
 use crate::kiwix::KiwixClient;
@@ -20,6 +21,8 @@ pub enum AgentEvent {
     },
     /// The turn completed successfully.
     Done,
+    /// The turn was cancelled by the user before it finished.
+    Interrupted,
     /// The turn failed; carries a user-facing message.
     Error(String),
 }
@@ -36,14 +39,23 @@ pub async fn run_turn(
     max_rounds: usize,
     messages: &mut Vec<ChatMessage>,
     tx: &UnboundedSender<AgentEvent>,
+    mut cancel: watch::Receiver<bool>,
 ) {
     let tools = tool_defs(lang);
 
     for round in 0..max_rounds {
+        // Cancelled between rounds: history is coherent (any tool calls are already
+        // answered), so just stop here.
+        if *cancel.borrow() {
+            let _ = tx.send(AgentEvent::Interrupted);
+            return;
+        }
+
         let assistant = match llm
             .stream_chat(
                 messages,
                 &tools,
+                &mut cancel,
                 |t| {
                     let _ = tx.send(AgentEvent::Token(t.to_string()));
                 },
@@ -66,6 +78,17 @@ pub async fn run_turn(
             }
         };
 
+        // Cancelled mid-stream: commit only the partial answer text (never the
+        // possibly-incomplete tool calls) so the conversation stays valid.
+        if *cancel.borrow() {
+            let partial = assistant.content.filter(|c| !c.trim().is_empty());
+            messages.push(ChatMessage::assistant(
+                partial.unwrap_or_else(|| "(interrupted)".to_string()),
+            ));
+            let _ = tx.send(AgentEvent::Interrupted);
+            return;
+        }
+
         let tool_calls = assistant.tool_calls.clone();
         messages.push(assistant);
 
@@ -80,6 +103,9 @@ pub async fn run_turn(
             break;
         }
 
+        // Execute every requested tool before re-checking cancellation: all calls
+        // in this round must be answered to keep the conversation valid. A pending
+        // cancel is picked up at the top of the next round.
         for call in calls {
             let (content, summary) =
                 match dispatch(kiwix, lang, &call.function.name, &call.function.arguments).await {
@@ -108,6 +134,7 @@ pub async fn run_turn(
         .stream_chat(
             messages,
             &[],
+            &mut cancel,
             |t| {
                 let _ = tx.send(AgentEvent::Token(t.to_string()));
             },
@@ -125,7 +152,11 @@ pub async fn run_turn(
     {
         Ok(m) => {
             messages.push(m);
-            let _ = tx.send(AgentEvent::Done);
+            let _ = tx.send(if *cancel.borrow() {
+                AgentEvent::Interrupted
+            } else {
+                AgentEvent::Done
+            });
         }
         Err(e) => {
             let _ = tx.send(AgentEvent::Error(format!("LLM error: {e:#}")));

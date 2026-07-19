@@ -8,7 +8,7 @@ use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 
 use crate::agent::{run_turn, system_prompt, AgentEvent};
 use crate::kiwix::KiwixClient;
@@ -55,6 +55,8 @@ pub struct App {
     /// request, i.e. the current conversation context length. `None` until the
     /// first response arrives (or the backend doesn't report usage).
     pub context_tokens: Option<u32>,
+    /// Signals the running agent task to stop (Esc). `None` when idle.
+    cancel: Option<watch::Sender<bool>>,
 
     // Session context
     pub lang: String,
@@ -88,6 +90,7 @@ impl App {
             current_reasoning: None,
             show_thinking: false,
             context_tokens: None,
+            cancel: None,
             lang,
             max_rounds,
             llm,
@@ -99,7 +102,8 @@ impl App {
             DisplayKind::Info,
             format!(
                 "Connected to LLM '{}' at {}. Kiwix: {} ({}). Type a question and press Enter. \
-                 Tab toggles thinking. Hold Shift and drag to select/copy text. \
+                 Tab toggles thinking. Esc interrupts a running answer. \
+                 Hold Shift and drag to select/copy text. \
                  Commands: /lang <code>, /clear, /quit. Ctrl+C to exit.",
                 app.llm.model(),
                 app.llm.base(),
@@ -178,12 +182,21 @@ impl App {
                 self.finalize_reasoning();
                 self.current_assistant = None;
                 self.busy = false;
+                self.cancel = None;
+            }
+            AgentEvent::Interrupted => {
+                self.finalize_reasoning();
+                self.current_assistant = None;
+                self.push(DisplayKind::Info, "Generation interrupted.");
+                self.busy = false;
+                self.cancel = None;
             }
             AgentEvent::Error(e) => {
                 self.finalize_reasoning();
                 self.current_assistant = None;
                 self.push(DisplayKind::Error, e);
                 self.busy = false;
+                self.cancel = None;
             }
         }
         self.follow = true;
@@ -220,6 +233,12 @@ impl App {
                 // Expand/collapse all reasoning blocks (works even while busy).
                 self.show_thinking = !self.show_thinking;
                 self.follow = false;
+            }
+            KeyCode::Esc if self.busy => {
+                // Signal the running agent task to stop; it emits Interrupted.
+                if let Some(c) = &self.cancel {
+                    let _ = c.send(true);
+                }
             }
             _ if self.busy => {} // ignore input edits while a turn runs
             KeyCode::Enter => self.submit(tx),
@@ -260,6 +279,9 @@ impl App {
         self.busy = true;
         self.current_assistant = None;
 
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        self.cancel = Some(cancel_tx);
+
         let llm = self.llm.clone();
         let kiwix = self.kiwix.clone();
         let lang = self.lang.clone();
@@ -270,7 +292,7 @@ impl App {
         tokio::spawn(async move {
             let mut guard = conversation.lock().await;
             guard.push(ChatMessage::user(text));
-            run_turn(&llm, &kiwix, &lang, max_rounds, &mut guard, &tx).await;
+            run_turn(&llm, &kiwix, &lang, max_rounds, &mut guard, &tx, cancel_rx).await;
         });
     }
 

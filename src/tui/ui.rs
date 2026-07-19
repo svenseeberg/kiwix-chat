@@ -19,18 +19,38 @@ const FG_DIM: Color = Color::Rgb(0x80, 0x80, 0x80); // grey for subdued text
 
 /// Render the whole UI: chat pane, input box, and status bar.
 pub fn draw(f: &mut Frame, app: &mut App) {
+    let area = f.area();
+    // The input box grows with its wrapped content, but never so tall that the
+    // chat pane drops below its 3-line minimum.
+    let rows = input_rows(&app.input, input_inner_width(area.width));
+    let max_content = (area.height as usize).saturating_sub(1 + 3 + 2).max(1);
+    let input_height = (rows.min(max_content) + 2) as u16;
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(3),    // chat
-            Constraint::Length(3), // input
-            Constraint::Length(1), // status
+            Constraint::Min(3),                // chat
+            Constraint::Length(input_height),  // input
+            Constraint::Length(1),             // status
         ])
-        .split(f.area());
+        .split(area);
 
     draw_chat(f, app, chunks[0]);
     draw_input(f, app, chunks[1]);
     draw_status(f, app, chunks[2]);
+}
+
+/// Usable text width inside the input box (total width minus the two borders).
+fn input_inner_width(total_width: u16) -> usize {
+    (total_width.saturating_sub(2)).max(1) as usize
+}
+
+/// Number of rows the prompt line `"> {input}"` occupies once hard-wrapped to
+/// `width` columns. The trailing cursor position counts, so a line filled exactly
+/// to `width` reports one extra row (the cursor sits on a fresh line).
+fn input_rows(input: &str, width: usize) -> usize {
+    let cols = 2 + input.chars().count(); // "> " prefix + text
+    cols / width + 1
 }
 
 fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
@@ -739,7 +759,7 @@ fn append_char(dst: &mut Vec<Seg>, c: char, style: Style) {
 
 fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     let title = if app.busy {
-        " thinking… (input disabled) "
+        " thinking… (Esc to interrupt) "
     } else {
         " message "
     };
@@ -752,16 +772,40 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .title(title)
         .border_style(style);
-    let text = format!("> {}", app.input);
-    let paragraph = Paragraph::new(text).block(block);
+
+    let width = input_inner_width(area.width);
+    let rows = wrap_input(&app.input, width);
+    // Visible text rows (box height minus the two borders).
+    let visible = area.height.saturating_sub(2) as usize;
+    // Keep the last (cursor) row in view when the content is taller than the box.
+    let scroll = rows.len().saturating_sub(visible);
+
+    let lines: Vec<Line> = rows.iter().map(|r| Line::from(r.clone())).collect();
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .scroll((scroll as u16, 0));
     f.render_widget(paragraph, area);
 
     if !app.busy {
-        // Place the cursor at the end of the input text.
-        let x = area.x + 3 + app.input.chars().count() as u16;
-        let y = area.y + 1;
-        f.set_cursor_position((x.min(area.x + area.width.saturating_sub(2)), y));
+        // Cursor sits just past the last character; project that column/row onto
+        // the wrapped layout, accounting for any vertical scroll.
+        let cols = 2 + app.input.chars().count();
+        let cursor_row = cols / width;
+        let cursor_col = cols % width;
+        let x = area.x + 1 + cursor_col as u16;
+        let y = area.y + 1 + (cursor_row.saturating_sub(scroll)) as u16;
+        f.set_cursor_position((x, y));
     }
+}
+
+/// Hard-wrap `"> {input}"` into rows of at most `width` columns (character-based,
+/// matching the single-column-per-char cursor model used elsewhere).
+fn wrap_input(input: &str, width: usize) -> Vec<String> {
+    let text: Vec<char> = format!("> {input}").chars().collect();
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+    text.chunks(width).map(|c| c.iter().collect()).collect()
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
