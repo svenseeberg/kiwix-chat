@@ -13,6 +13,11 @@ pub enum AgentEvent {
     Reasoning(String),
     /// A tool call has finished (dim status line).
     ToolFinished { summary: String },
+    /// Token usage reported by the backend for the latest request.
+    Usage {
+        prompt_tokens: u32,
+        completion_tokens: u32,
+    },
     /// The turn completed successfully.
     Done,
     /// The turn failed; carries a user-facing message.
@@ -44,6 +49,12 @@ pub async fn run_turn(
                 },
                 |r| {
                     let _ = tx.send(AgentEvent::Reasoning(r.to_string()));
+                },
+                |prompt_tokens, completion_tokens| {
+                    let _ = tx.send(AgentEvent::Usage {
+                        prompt_tokens,
+                        completion_tokens,
+                    });
                 },
             )
             .await
@@ -102,6 +113,12 @@ pub async fn run_turn(
             },
             |r| {
                 let _ = tx.send(AgentEvent::Reasoning(r.to_string()));
+            },
+            |prompt_tokens, completion_tokens| {
+                let _ = tx.send(AgentEvent::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                });
             },
         )
         .await

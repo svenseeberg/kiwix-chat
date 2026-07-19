@@ -51,6 +51,10 @@ pub struct App {
     current_reasoning: Option<usize>,
     /// When true, all thinking blocks are shown expanded (toggled with Tab).
     pub show_thinking: bool,
+    /// Total tokens (prompt + completion) reported by the backend for the latest
+    /// request, i.e. the current conversation context length. `None` until the
+    /// first response arrives (or the backend doesn't report usage).
+    pub context_tokens: Option<u32>,
 
     // Session context
     pub lang: String,
@@ -83,6 +87,7 @@ impl App {
             current_assistant: None,
             current_reasoning: None,
             show_thinking: false,
+            context_tokens: None,
             lang,
             max_rounds,
             llm,
@@ -161,6 +166,14 @@ impl App {
                 self.current_assistant = None;
                 self.push(DisplayKind::Tool, summary);
             }
+            AgentEvent::Usage {
+                prompt_tokens,
+                completion_tokens,
+            } => {
+                // Status-bar update only; must not disturb the scroll position.
+                self.context_tokens = Some(prompt_tokens + completion_tokens);
+                return;
+            }
             AgentEvent::Done => {
                 self.finalize_reasoning();
                 self.current_assistant = None;
@@ -184,6 +197,14 @@ impl App {
         // Ctrl+C always quits.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.should_quit = true;
+            return;
+        }
+        // Ctrl+U clears the input line (the cursor is always at the end, so this
+        // deletes everything before it, matching readline's kill-to-start).
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('u') {
+            if !self.busy {
+                self.input.clear();
+            }
             return;
         }
 
@@ -261,6 +282,7 @@ impl App {
                 self.messages.clear();
                 self.current_assistant = None;
                 self.current_reasoning = None;
+                self.context_tokens = None;
                 let conversation = self.conversation.clone();
                 tokio::spawn(async move {
                     let mut guard = conversation.lock().await;

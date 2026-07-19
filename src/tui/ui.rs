@@ -771,6 +771,10 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Span::styled("kiwix✗", Style::default().fg(ACCENT_ERR))
     };
     let status = if app.busy { "busy" } else { "ready" };
+    let ctx = match app.context_tokens {
+        Some(n) => format!("ctx:{}", format_tokens(n)),
+        None => "ctx:—".to_string(),
+    };
     let line = Line::from(vec![
         Span::styled(
             format!(" {} ", app.llm.model()),
@@ -780,9 +784,19 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         kiwix_state,
         Span::raw(format!("  lang:{}  ", app.lang)),
         Span::styled(status, Style::default().add_modifier(Modifier::DIM)),
+        Span::raw(format!("  {ctx}")),
         Span::raw("  PgUp/PgDn scroll · Tab thinking · /quit"),
     ]);
     f.render_widget(Paragraph::new(line), area);
+}
+
+/// Format a token count compactly: raw below 1000, else one decimal + `k`.
+fn format_tokens(n: u32) -> String {
+    if n < 1000 {
+        n.to_string()
+    } else {
+        format!("{:.1}k", n as f64 / 1000.0)
+    }
 }
 
 #[cfg(test)]

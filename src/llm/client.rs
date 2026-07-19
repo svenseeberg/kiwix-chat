@@ -76,11 +76,13 @@ impl LlmClient {
         tools: &[Tool],
         mut on_token: impl FnMut(&str),
         mut on_reasoning: impl FnMut(&str),
+        mut on_usage: impl FnMut(u32, u32),
     ) -> Result<ChatMessage> {
         let mut body = json!({
             "model": self.model,
             "messages": messages,
             "stream": true,
+            "stream_options": { "include_usage": true },
         });
         if !tools.is_empty() {
             body["tools"] = serde_json::to_value(tools)?;
@@ -123,6 +125,11 @@ impl LlmClient {
                     Ok(d) => d,
                     Err(_) => continue, // ignore keep-alives / non-JSON lines
                 };
+                // Usage arrives in a dedicated chunk (with empty `choices`) at the
+                // end of the stream when `stream_options.include_usage` is set.
+                if let Some(usage) = delta.usage {
+                    on_usage(usage.prompt_tokens, usage.completion_tokens);
+                }
                 if let Some(choice) = delta.choices.into_iter().next() {
                     // Dedicated reasoning fields, if the backend exposes them.
                     for field in [
@@ -313,6 +320,17 @@ impl ToolCallAccumulator {
 struct StreamChunk {
     #[serde(default)]
     choices: Vec<StreamChoice>,
+    #[serde(default)]
+    usage: Option<Usage>,
+}
+
+/// Token accounting reported by the backend (present in the final stream chunk).
+#[derive(Deserialize, Clone, Copy)]
+struct Usage {
+    #[serde(default)]
+    prompt_tokens: u32,
+    #[serde(default)]
+    completion_tokens: u32,
 }
 
 #[derive(Deserialize)]
