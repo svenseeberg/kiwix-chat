@@ -29,9 +29,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(3),                // chat
-            Constraint::Length(input_height),  // input
-            Constraint::Length(1),             // status
+            Constraint::Min(3),               // chat
+            Constraint::Length(input_height), // input
+            Constraint::Length(1),            // status
         ])
         .split(area);
 
