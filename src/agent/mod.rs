@@ -10,6 +10,13 @@ pub const ARTICLE_MAX_CHARS: usize = 24000;
 /// Default number of search hits requested per `search_wikipedia` call.
 pub const DEFAULT_SEARCH_LIMIT: usize = 8;
 
+/// Default number of context lines included before and after each `grep_article` match.
+pub const GREP_DEFAULT_CONTEXT: usize = 3;
+
+/// Upper bound on the `grep_article` context window, to keep tool output bounded
+/// even if the model requests a very large value.
+pub const GREP_MAX_CONTEXT: usize = 20;
+
 /// System prompt instructing the agent to ground answers in the local Kiwix library.
 ///
 /// `kiwix_base` is the running kiwix-serve base URL (no trailing slash) so the model can
@@ -31,6 +38,9 @@ Guidelines:
   answers returned by sub-agents. In that case use `search_wikipedia` to find relevant articles, \
   then `read_article` to read the most promising ones. Use `list_books` if you are unsure what \
   corpora or languages are available.
+- When you only need a specific fact from a long article, use `grep_article` to find the lines \
+  mentioning a word or phrase (with a few lines of context) instead of paging through the whole \
+  article with `read_article`; this keeps your context focused.
 - Prefer reading at least one article (yourself or via a sub-agent) rather than answering from \
   the search snippets alone.
 - Long articles are paginated. Each `read_article` result reports `total_chars`, the returned \
@@ -68,6 +78,9 @@ Guidelines:
 - Use `search_wikipedia` to find relevant articles, then `read_article` to read the most \
   promising ones before answering. Use `list_books` if you are unsure what corpora or languages \
   are available.
+- When you only need a specific fact from a long article, use `grep_article` to find the lines \
+  mentioning a word or phrase (with a few lines of context) instead of paging through the whole \
+  article with `read_article`.
 - Prefer reading at least one article rather than answering from the search snippets alone.
 - Long articles are paginated. Each `read_article` result reports `total_chars`, the returned \
   range, and `has_more`. If `has_more` is true and you still need information not yet shown, call \

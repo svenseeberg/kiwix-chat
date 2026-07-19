@@ -3,7 +3,7 @@ use evalexpr::ContextWithMutableVariables;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{ARTICLE_MAX_CHARS, DEFAULT_SEARCH_LIMIT};
+use super::{ARTICLE_MAX_CHARS, DEFAULT_SEARCH_LIMIT, GREP_DEFAULT_CONTEXT, GREP_MAX_CONTEXT};
 use crate::kiwix::KiwixClient;
 use crate::llm::Tool;
 
@@ -68,6 +68,43 @@ pub fn tool_defs(default_lang: &str, include_research: bool) -> Vec<Tool> {
                     }
                 },
                 "required": ["zim_name", "path"]
+            }),
+        ),
+        Tool::function(
+            "grep_article",
+            "Search WITHIN a specific article for lines containing a word or phrase, and return \
+             only those lines plus a few lines of surrounding context. Prefer this over \
+             read_article when you are looking for a specific fact in a long article: it is much \
+             cheaper on context because it returns only the relevant excerpts instead of full \
+             pages of text. Matching is case-insensitive substring matching (not regex). The \
+             result reports total_lines, match_count, and a list of context blocks, each with the \
+             1-based start_line and its text.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "zim_name": {
+                        "type": "string",
+                        "description": "The ZIM name of the book containing the article."
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "The article path within the ZIM file (e.g. 'A/Ada_Lovelace')."
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "The word or phrase to search for (case-insensitive)."
+                    },
+                    "context": {
+                        "type": "integer",
+                        "description": format!(
+                            "Number of lines to include before and after each match \
+                             (default {GREP_DEFAULT_CONTEXT}, max {GREP_MAX_CONTEXT})."
+                        ),
+                        "minimum": 0,
+                        "maximum": GREP_MAX_CONTEXT
+                    }
+                },
+                "required": ["zim_name", "path", "query"]
             }),
         ),
         Tool::function(
@@ -146,6 +183,7 @@ pub async fn dispatch(
     match name {
         "search_wikipedia" => search(kiwix, default_lang, arguments).await,
         "read_article" => read(kiwix, arguments).await,
+        "grep_article" => grep(kiwix, arguments).await,
         "list_books" => list_books(kiwix).await,
         "calculate" => calculate(arguments).await,
         other => Ok(ToolOutcome {
@@ -233,6 +271,73 @@ async fn read(kiwix: &KiwixClient, arguments: &str) -> Result<ToolOutcome> {
             "returned_chars": returned_chars,
             "next_offset": page.next_offset,
             "has_more": page.next_offset.is_some(),
+        })
+        .to_string(),
+        summary,
+    })
+}
+
+#[derive(Deserialize)]
+struct GrepArgs {
+    zim_name: String,
+    path: String,
+    query: String,
+    #[serde(default)]
+    context: Option<usize>,
+}
+
+async fn grep(kiwix: &KiwixClient, arguments: &str) -> Result<ToolOutcome> {
+    let args: GrepArgs = parse_args(arguments)?;
+    let context = args
+        .context
+        .unwrap_or(GREP_DEFAULT_CONTEXT)
+        .min(GREP_MAX_CONTEXT);
+    let result = kiwix
+        .grep_article(&args.zim_name, &args.path, &args.query, context)
+        .await?;
+
+    let summary = format!(
+        "Grepped '{}' for \"{}\" ({} match{})",
+        args.path,
+        args.query,
+        result.match_count,
+        if result.match_count == 1 { "" } else { "es" }
+    );
+
+    if result.match_count == 0 {
+        return Ok(ToolOutcome {
+            content: json!({
+                "zim_name": args.zim_name,
+                "path": args.path,
+                "query": args.query,
+                "total_lines": result.total_lines,
+                "match_count": 0,
+                "blocks": [],
+                "note": "No lines matched. Try a different or shorter query, or use read_article.",
+            })
+            .to_string(),
+            summary,
+        });
+    }
+
+    let blocks: Vec<Value> = result
+        .blocks
+        .iter()
+        .map(|b| {
+            json!({
+                "start_line": b.start_line,
+                "text": b.lines.join("\n"),
+            })
+        })
+        .collect();
+    Ok(ToolOutcome {
+        content: json!({
+            "zim_name": args.zim_name,
+            "path": args.path,
+            "query": args.query,
+            "total_lines": result.total_lines,
+            "match_count": result.match_count,
+            "blocks": blocks,
         })
         .to_string(),
         summary,
