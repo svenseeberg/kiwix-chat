@@ -7,18 +7,6 @@ citations — all without touching the internet.
 
 ![Example of the LLM researching a physics question and then using the calculate tool to produce an answer.](example.png "Example")
 
-```
-┌──────────────┐   tool calls    ┌──────────────┐   HTTP    ┌────────────┐
-│  ratatui TUI │◄──────────────► │ agent loop   │◄─────────►│ kiwix-serve│
-└──────────────┘                 │ + LLM client │           └────────────┘
-                                 └──────┬───────┘
-                                   OpenAI /v1/chat/completions
-                                 ┌──────▼───────┐
-                                 │ llama.cpp /  │
-                                 │ Ollama       │
-                                 └──────────────┘
-```
-
 ## Requirements
 
 - Rust 1.85+
