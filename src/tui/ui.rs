@@ -194,10 +194,28 @@ fn render_message(
 
     let mut first = true;
     let mut in_code = false;
-    for raw in msg.text.split('\n') {
+    let raw_lines: Vec<&str> = msg.text.split('\n').collect();
+    let mut li = 0;
+    while li < raw_lines.len() {
+        let raw = raw_lines[li];
         // Fenced code block delimiters toggle verbatim mode and aren't rendered.
         if markdown && raw.trim_start().starts_with("```") {
             in_code = !in_code;
+            li += 1;
+            continue;
+        }
+
+        // GFM table: a header row followed by a delimiter row. Rendered as a whole
+        // block so column widths can be computed across every row at once.
+        if markdown && !in_code && is_table_start(&raw_lines, li) {
+            let start = li;
+            li += 1; // header
+            li += 1; // delimiter
+            while li < raw_lines.len() && raw_lines[li].contains('|') {
+                li += 1;
+            }
+            let table_lines = render_table(&raw_lines[start..li], content_width);
+            emit_lines(lines, table_lines, &prefix, style, &indent, &mut first);
             continue;
         }
 
@@ -238,11 +256,220 @@ fn render_message(
             spans.extend(wl.into_iter().map(|(t, s)| Span::styled(t, s)));
             lines.push(Line::from(spans));
         }
+        li += 1;
     }
     // Guarantee at least the label line for an empty message.
     if first {
         lines.push(Line::from(Span::styled(prefix, style)));
     }
+}
+
+/// Push a block of already-styled segment lines into the transcript, giving the
+/// very first physical line the message prefix and the rest the hanging indent.
+fn emit_lines(
+    lines: &mut Vec<Line<'static>>,
+    block: Vec<Vec<Seg>>,
+    prefix: &str,
+    prefix_style: Style,
+    indent: &str,
+    first: &mut bool,
+) {
+    for seg_line in block {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        if *first {
+            spans.push(Span::styled(prefix.to_string(), prefix_style));
+            *first = false;
+        } else {
+            spans.push(Span::raw(indent.to_string()));
+        }
+        spans.extend(seg_line.into_iter().map(|(t, s)| Span::styled(t, s)));
+        lines.push(Line::from(spans));
+    }
+}
+
+fn table_border_style() -> Style {
+    Style::default().fg(FG_DIM)
+}
+
+/// Cell text alignment, read from the `:---`, `:--:`, `---:` markers in the
+/// delimiter row.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Align {
+    Left,
+    Center,
+    Right,
+}
+
+/// True when `lines[i]` begins a GFM table: a row containing `|` immediately
+/// followed by a delimiter row (`| --- | :--: |` and friends).
+fn is_table_start(lines: &[&str], i: usize) -> bool {
+    if !lines[i].contains('|') {
+        return false;
+    }
+    match lines.get(i + 1) {
+        // The delimiter must carry a `|` so a `text | x` line above a `---`
+        // thematic break isn't mistaken for a one-column table.
+        Some(next) => next.contains('|') && is_delimiter_row(next),
+        None => false,
+    }
+}
+
+/// A GFM delimiter row: every cell is `:?-+:?` (optional surrounding spaces) and
+/// contains at least one `-`.
+fn is_delimiter_row(line: &str) -> bool {
+    let cells = split_table_row(line);
+    !cells.is_empty()
+        && cells.iter().all(|c| {
+            let t = c.trim();
+            !t.is_empty() && t.contains('-') && t.chars().all(|ch| ch == '-' || ch == ':')
+        })
+}
+
+/// Split one table row into trimmed cell strings, dropping the empty cells that
+/// bracket a `|a|b|`-style row.
+fn split_table_row(line: &str) -> Vec<String> {
+    let t = line.trim();
+    let t = t.strip_prefix('|').unwrap_or(t);
+    let t = t.strip_suffix('|').unwrap_or(t);
+    t.split('|').map(|c| c.trim().to_string()).collect()
+}
+
+/// Alignment encoded by a single delimiter cell.
+fn parse_align(cell: &str) -> Align {
+    let t = cell.trim();
+    match (t.starts_with(':'), t.ends_with(':')) {
+        (true, true) => Align::Center,
+        (false, true) => Align::Right,
+        _ => Align::Left,
+    }
+}
+
+/// Pad or truncate a row's cells to exactly `ncols` entries.
+fn fit_cols(cells: &[String], ncols: usize) -> Vec<String> {
+    let mut v = cells.to_vec();
+    v.truncate(ncols);
+    v.resize(ncols, String::new());
+    v
+}
+
+/// Longest natural cell width per column (capped), then shrunk proportionally so
+/// the whole table — borders and padding included — fits within `avail` columns.
+fn column_widths(grid: &[Vec<String>], ncols: usize, avail: usize) -> Vec<usize> {
+    const MAX_COL: usize = 40;
+    let mut nat = vec![1usize; ncols];
+    for row in grid {
+        for (i, cell) in row.iter().enumerate() {
+            let w = cell.chars().count().clamp(1, MAX_COL);
+            nat[i] = nat[i].max(w);
+        }
+    }
+    // Overhead: `ncols + 1` vertical bars plus one padding space on each side.
+    let overhead = (ncols + 1) + ncols * 2;
+    let budget = avail.saturating_sub(overhead);
+    let total: usize = nat.iter().sum();
+    if total <= budget {
+        return nat;
+    }
+    if budget < ncols {
+        // Too narrow to shrink sensibly; give every column a single column.
+        return vec![1; ncols];
+    }
+    // Distribute the budget proportionally to natural widths, min 1 each.
+    let extra = budget - ncols;
+    let shrinkable: usize = nat.iter().map(|w| w - 1).sum::<usize>().max(1);
+    let mut out = vec![1usize; ncols];
+    for i in 0..ncols {
+        out[i] += (nat[i] - 1) * extra / shrinkable;
+    }
+    // Hand any rounding leftover to the widest columns first.
+    let assigned: usize = out.iter().sum();
+    let mut leftover = budget.saturating_sub(assigned);
+    let mut idx: Vec<usize> = (0..ncols).collect();
+    idx.sort_by_key(|&i| std::cmp::Reverse(nat[i]));
+    let mut k = 0;
+    while leftover > 0 {
+        out[idx[k % ncols]] += 1;
+        leftover -= 1;
+        k += 1;
+    }
+    out
+}
+
+/// A horizontal border rule (`┌─┬─┐`, `├─┼─┤`, or `└─┴─┘`) spanning `widths`.
+fn table_rule(widths: &[usize], left: &str, mid: &str, right: &str) -> Vec<Seg> {
+    let mut s = String::from(left);
+    for (i, w) in widths.iter().enumerate() {
+        if i > 0 {
+            s.push_str(mid);
+        }
+        s.push_str(&"─".repeat(w + 2)); // +2 for the padding spaces around a cell
+    }
+    s.push_str(right);
+    vec![(s, table_border_style())]
+}
+
+/// Render a GFM table (`rows[0]` header, `rows[1]` delimiter, remaining rows the
+/// body) into styled segment lines that fit within `avail` columns, using a full
+/// box-drawing grid. Cell contents keep inline markdown and are wrapped to fit.
+fn render_table(rows: &[&str], avail: usize) -> Vec<Vec<Seg>> {
+    let header = split_table_row(rows[0]);
+    let ncols = header.len().max(1);
+    let delim = split_table_row(rows.get(1).copied().unwrap_or(""));
+    let aligns: Vec<Align> = (0..ncols)
+        .map(|i| delim.get(i).map(|c| parse_align(c)).unwrap_or(Align::Left))
+        .collect();
+
+    let mut grid: Vec<Vec<String>> = vec![fit_cols(&header, ncols)];
+    for r in &rows[2.min(rows.len())..] {
+        grid.push(fit_cols(&split_table_row(r), ncols));
+    }
+
+    let widths = column_widths(&grid, ncols, avail);
+    let border = table_border_style();
+
+    let mut out: Vec<Vec<Seg>> = Vec::new();
+    out.push(table_rule(&widths, "┌", "┬", "┐"));
+    for (ri, row) in grid.iter().enumerate() {
+        let is_header = ri == 0;
+        let base = if is_header {
+            Style::default().fg(FG_TEXT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(FG_TEXT)
+        };
+        // Wrap each cell independently; the row is as tall as its tallest cell.
+        let cells: Vec<Vec<Vec<Seg>>> = (0..ncols)
+            .map(|ci| wrap_segments(&parse_inline(&row[ci], base), widths[ci]))
+            .collect();
+        let height = cells.iter().map(|c| c.len()).max().unwrap_or(1).max(1);
+
+        for h in 0..height {
+            let mut segs: Vec<Seg> = Vec::new();
+            for ci in 0..ncols {
+                segs.push(("│ ".to_string(), border));
+                let content = cells[ci].get(h).cloned().unwrap_or_default();
+                let cw: usize = content.iter().map(|(t, _)| t.chars().count()).sum();
+                let pad = widths[ci].saturating_sub(cw);
+                let (lp, rp) = match aligns[ci] {
+                    Align::Left => (0, pad),
+                    Align::Right => (pad, 0),
+                    Align::Center => (pad / 2, pad - pad / 2),
+                };
+                if lp > 0 {
+                    segs.push((" ".repeat(lp), base));
+                }
+                segs.extend(content);
+                segs.push((" ".repeat(rp + 1), border)); // trailing pad + gap before bar
+            }
+            segs.push(("│".to_string(), border));
+            out.push(segs);
+        }
+
+        if is_header {
+            out.push(table_rule(&widths, "├", "┼", "┤"));
+        }
+    }
+    out.push(table_rule(&widths, "└", "┴", "┘"));
+    out
 }
 
 /// A single markdown block line decomposed into a leading marker and body text.
@@ -901,5 +1128,64 @@ mod tests {
             normalize_math("it costs $5 or $10 total"),
             "it costs $5 or $10 total"
         );
+    }
+
+    #[test]
+    fn detects_table_header_and_delimiter() {
+        let lines = vec!["| A | B |", "| --- | :--: |", "| 1 | 2 |"];
+        assert!(is_table_start(&lines, 0));
+        // A pipe line with no delimiter row below is not a table.
+        let prose = vec!["value | other", "more prose here"];
+        assert!(!is_table_start(&prose, 0));
+        // A `---` thematic break after a pipe line must not trigger a table.
+        let thematic = vec!["a | b", "---"];
+        assert!(!is_table_start(&thematic, 0));
+    }
+
+    #[test]
+    fn parses_cells_and_alignment() {
+        assert_eq!(split_table_row("| A | B | C |"), vec!["A", "B", "C"]);
+        assert_eq!(split_table_row("A | B"), vec!["A", "B"]);
+        assert_eq!(parse_align(":---"), Align::Left);
+        assert_eq!(parse_align(":--:"), Align::Center);
+        assert_eq!(parse_align("---:"), Align::Right);
+        assert!(is_delimiter_row("| --- | :---: |"));
+        assert!(!is_delimiter_row("| not | a delim |"));
+    }
+
+    /// Visible column count of a rendered segment line.
+    fn line_width(segs: &[Seg]) -> usize {
+        segs.iter().map(|(t, _)| t.chars().count()).sum()
+    }
+
+    #[test]
+    fn table_fits_within_available_width() {
+        let rows = vec![
+            "| Name | Description |",
+            "| --- | --- |",
+            "| alpha | a rather long description that will not fit a narrow pane |",
+            "| beta | short |",
+        ];
+        let avail = 30;
+        let out = render_table(&rows, avail);
+        assert!(!out.is_empty());
+        for segs in &out {
+            assert!(
+                line_width(segs) <= avail,
+                "line exceeds width: {}",
+                line_width(segs)
+            );
+        }
+        // Border rows top and bottom.
+        assert!(out[0].iter().any(|(t, _)| t.starts_with('┌')));
+        assert!(out.last().unwrap().iter().any(|(t, _)| t.starts_with('└')));
+    }
+
+    #[test]
+    fn table_renders_without_panicking_when_very_narrow() {
+        let rows = vec!["| A | B | C |", "| --- | --- | --- |", "| 1 | 2 | 3 |"];
+        // Narrower than the per-column overhead — must still produce output.
+        let out = render_table(&rows, 4);
+        assert!(!out.is_empty());
     }
 }

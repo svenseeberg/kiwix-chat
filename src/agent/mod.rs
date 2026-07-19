@@ -38,6 +38,8 @@ Guidelines:
   any other external URL — every link must point at {kiwix_base}.
 - Write mathematics in plain Unicode text (e.g. x² + y², √2, a/b, π, ≈, ×, ·). Do NOT use LaTeX \
   or any math delimiters such as $, $$, \\( \\), \\[ \\], and do not use commands like \\frac.
+- When presenting tabular data, you may use GitHub-flavored Markdown tables (a header row, a \
+  `| --- | --- |` delimiter row, then one row per line); keep cell contents short.
 - Be concise and factual. Do not mention the tool mechanics unless asked."
     )
 }
